@@ -7,11 +7,6 @@ const CACHE_KEYS = {
 
 const CACHE_DURATION_MS = 10 * 60 * 1000; // 10 minutes
 
-interface CacheEntry<T> {
-  data: T;
-  timestamp: number;
-}
-
 export function getCachedBookings<T>(): T[] | null {
   try {
     const cached = localStorage.getItem(CACHE_KEYS.BOOKINGS);

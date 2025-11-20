@@ -26,7 +26,6 @@ import {
   YAxis,
 } from 'recharts';
 import {
-  addDays,
   eachDayOfInterval,
   endOfDay,
   format,
@@ -41,8 +40,6 @@ import type { EmailPrefillPayload } from '../types/emailPrefill';
 import {
   getCachedBookings,
   setCachedBookings,
-  getCachedUsers,
-  setCachedUsers,
   clearAllCache,
 } from '../utils/dataCache';
 
