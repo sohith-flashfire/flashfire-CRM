@@ -1,0 +1,1733 @@
+import { useEffect, useMemo, useState, useCallback } from 'react';
+import {
+  Calendar,
+  CheckCircle2,
+  Clock,
+  Loader2,
+  Mail,
+  RefreshCcw,
+  Search,
+  Users,
+  AlertTriangle,
+  ExternalLink,
+  CheckSquare,
+  Square,
+  Send,
+  X,
+  Info,
+  ArrowLeft,
+  ChevronDown,
+  ChevronRight,
+} from 'lucide-react';
+import {
+  format,
+  parseISO,
+  isBefore,
+  isAfter,
+  startOfDay,
+  endOfDay,
+} from 'date-fns';
+import type { EmailPrefillPayload } from '../types/emailPrefill';
+import {
+  getCachedBookings,
+  setCachedBookings,
+  getCachedUsers,
+  setCachedUsers,
+  clearAllCache,
+} from '../utils/dataCache';
+
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://api.flashfirejobs.com';
+
+type BookingStatus = 'scheduled' | 'completed' | 'canceled' | 'rescheduled' | 'no-show';
+type DataType = 'booking' | 'user';
+
+interface Booking {
+  bookingId: string;
+  clientName: string;
+  clientEmail: string;
+  clientPhone?: string;
+  calendlyMeetLink?: string;
+  scheduledEventStartTime?: string;
+  bookingCreatedAt: string;
+  bookingStatus: BookingStatus;
+  utmSource?: string;
+  utmMedium?: string;
+  utmCampaign?: string;
+  anythingToKnow?: string;
+  reminderCallJobId?: string;
+  paymentReminders?: Array<{
+    jobId: string;
+    paymentLink: string;
+    reminderDays: number;
+    scheduledTime: string;
+    status: string;
+    sentAt?: string;
+    createdAt: string;
+  }>;
+  rescheduledCount?: number;
+  whatsappReminderSent?: boolean;
+}
+
+interface UserWithoutBooking {
+  email: string;
+  fullName: string;
+  phone: string;
+  countryCode: string;
+  createdAt: string;
+  workAuthorization: string;
+}
+
+interface UnifiedRow {
+  id: string;
+  type: DataType;
+  name: string;
+  email: string;
+  phone?: string;
+  createdAt: string;
+  scheduledTime?: string;
+  source?: string;
+  status?: BookingStatus;
+  meetLink?: string;
+  notes?: string;
+  bookingId?: string;
+  workAuthorization?: string;
+}
+
+interface UnifiedDataViewProps {
+  onOpenEmailCampaign: (payload: EmailPrefillPayload) => void;
+}
+
+const statusLabels: Record<BookingStatus, string> = {
+  scheduled: 'Scheduled',
+  completed: 'Completed',
+  canceled: 'Canceled',
+  rescheduled: 'Rescheduled',
+  'no-show': 'No Show',
+};
+
+const statusColors: Record<BookingStatus, string> = {
+  scheduled: 'text-blue-600 bg-blue-100',
+  completed: 'text-green-600 bg-green-100',
+  canceled: 'text-red-600 bg-red-100',
+  rescheduled: 'text-amber-600 bg-amber-100',
+  'no-show': 'text-rose-600 bg-rose-100',
+};
+
+interface UserCampaign {
+  _id: string;
+  templateName: string;
+  provider: string;
+  status: string;
+  sentAt: string;
+  createdAt: string;
+}
+
+interface CampaignDetails {
+  campaign: {
+    _id: string;
+    templateName: string;
+    domainName: string;
+    templateId: string;
+    provider: string;
+    status: string;
+    total: number;
+    success: number;
+    failed: number;
+    createdAt: string;
+  };
+  userEmailDetails: {
+    email: string;
+    status: string;
+    sentAt: string;
+    error: string | null;
+  };
+  timeWindow: {
+    start: string;
+    end: string;
+    hasNextEmail: boolean;
+    nextEmailDate: string | null;
+  };
+  bookingsAfterEmail: Array<{
+    bookingId: string;
+    clientName: string;
+    clientEmail: string;
+    scheduledEventStartTime: string;
+    bookingCreatedAt: string;
+    bookingStatus: string;
+    calendlyMeetLink: string;
+  }>;
+  bookingCount: number;
+  bookedAfterEmail: boolean;
+}
+
+export default function UnifiedDataView({ onOpenEmailCampaign }: UnifiedDataViewProps) {
+  const [bookings, setBookings] = useState<Booking[]>(() => {
+    // Initialize from cache if available
+    const cached = getCachedBookings<Booking>();
+    return cached || [];
+  });
+  const [usersWithoutBookings, setUsersWithoutBookings] = useState<UserWithoutBooking[]>(() => {
+    // Initialize from cache if available
+    const cached = getCachedUsers<UserWithoutBooking>();
+    return cached || [];
+  });
+  const [userCampaigns, setUserCampaigns] = useState<Map<string, UserCampaign[]>>(new Map());
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [selectedRows, setSelectedRows] = useState<Set<string>>(new Set());
+  const [statusFilter, setStatusFilter] = useState<BookingStatus | 'all'>('all');
+  const [typeFilter, setTypeFilter] = useState<'all' | 'booking' | 'user'>('all');
+  const [search, setSearch] = useState('');
+  const [fromDate, setFromDate] = useState<string>('');
+  const [toDate, setToDate] = useState<string>('');
+  const [utmFilter, setUtmFilter] = useState<string>('all');
+  const [updatingBookingId, setUpdatingBookingId] = useState<string | null>(null);
+  const [selectedCampaign, setSelectedCampaign] = useState<{ campaignId: string; userEmail: string } | null>(null);
+  const [campaignDetails, setCampaignDetails] = useState<CampaignDetails | null>(null);
+  const [loadingCampaignDetails, setLoadingCampaignDetails] = useState(false);
+  const [selectedUserEmail, setSelectedUserEmail] = useState<string | null>(null);
+  const [userCampaignsList, setUserCampaignsList] = useState<UserCampaign[]>([]);
+  const [loadingUserCampaigns, setLoadingUserCampaigns] = useState(false);
+  const [loadingCampaignsForEmails, setLoadingCampaignsForEmails] = useState<Set<string>>(new Set());
+  const [isUsersWithoutMeetingsExpanded, setIsUsersWithoutMeetingsExpanded] = useState(false);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [hasMoreData, setHasMoreData] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const ITEMS_PER_PAGE = 50;
+
+  // Indexes for fast lookups
+  const bookingsById = useMemo(() => {
+    const map = new Map<string, Booking>();
+    bookings.forEach((booking) => {
+      map.set(booking.bookingId, booking);
+    });
+    return map;
+  }, [bookings]);
+
+  const usersByEmail = useMemo(() => {
+    const map = new Map<string, UserWithoutBooking>();
+    usersWithoutBookings.forEach((user) => {
+      map.set(user.email.toLowerCase(), user);
+    });
+    return map;
+  }, [usersWithoutBookings]);
+
+  const fetchData = useCallback(async (forceRefresh = false, page = 1, append = false) => {
+    try {
+      if (!append) {
+        setRefreshing(true);
+        setError(null);
+      } else {
+        setLoadingMore(true);
+      }
+
+      if (!forceRefresh && !append) {
+        const cachedBookings = getCachedBookings<Booking>();
+        const cachedUsers = getCachedUsers<UserWithoutBooking>();
+
+        if (cachedBookings && cachedUsers) {
+          setBookings(cachedBookings);
+          setUsersWithoutBookings(cachedUsers);
+          setLoading(false);
+          setRefreshing(false);
+          setTimeout(() => {
+            fetchData(true, 1, false).catch(console.error);
+          }, 100);
+          return;
+        }
+      }
+
+      const skip = (page - 1) * ITEMS_PER_PAGE;
+      const [bookingsRes, usersRes] = await Promise.all([
+        fetch(`${API_BASE_URL}/api/campaign-bookings?limit=${ITEMS_PER_PAGE}&skip=${skip}`),
+        fetch(`${API_BASE_URL}/api/users/without-bookings/detailed`),
+      ]);
+
+      const bookingsData = await bookingsRes.json();
+      const usersData = await usersRes.json();
+
+      if (bookingsData.success) {
+        if (append) {
+          setBookings((prev) => [...prev, ...bookingsData.data]);
+        } else {
+          setBookings(bookingsData.data);
+          setCachedBookings(bookingsData.data);
+        }
+        const total = bookingsData.total || bookingsData.data.length;
+        setHasMoreData(bookingsData.data.length === ITEMS_PER_PAGE && (skip + ITEMS_PER_PAGE < total));
+      } else {
+        throw new Error(bookingsData.message || 'Failed to fetch bookings');
+      }
+
+      if (usersData.success && !append) {
+        setUsersWithoutBookings(usersData.data);
+        setCachedUsers(usersData.data);
+      } else if (!usersData.success && !append) {
+        console.warn('Failed to fetch users:', usersData.message);
+      }
+    } catch (err) {
+      console.error(err);
+      setError(err instanceof Error ? err.message : 'Failed to load data');
+    } finally {
+      setRefreshing(false);
+      setLoading(false);
+      setLoadingMore(false);
+    }
+  }, []);
+
+  const fetchUserCampaigns = useCallback(async (emails: string[]) => {
+    try {
+      setLoadingUserCampaigns(true);
+      const loadingSet = new Set<string>(emails.map(e => e.toLowerCase()));
+      setLoadingCampaignsForEmails(loadingSet);
+      
+      const campaignsMap = new Map<string, UserCampaign[]>();
+      
+      await Promise.all(
+        emails.map(async (email) => {
+          try {
+            const response = await fetch(`${API_BASE_URL}/api/email-campaigns/user/${encodeURIComponent(email)}`);
+            const data = await response.json();
+            if (data.success && data.data) {
+              campaignsMap.set(email.toLowerCase(), data.data);
+            }
+          } catch (err) {
+            console.error(`Failed to fetch campaigns for ${email}:`, err);
+          }
+        })
+      );
+      
+      setUserCampaigns(campaignsMap);
+    } catch (err) {
+      console.error('Error fetching user campaigns:', err);
+    } finally {
+      setLoadingUserCampaigns(false);
+      setLoadingCampaignsForEmails(new Set());
+    }
+  }, []);
+
+  useEffect(() => {
+    const cachedBookings = getCachedBookings<Booking>();
+    const cachedUsers = getCachedUsers<UserWithoutBooking>();
+
+    if (cachedBookings && cachedUsers) {
+      setBookings(cachedBookings);
+      setUsersWithoutBookings(cachedUsers);
+      setLoading(false);
+      const allEmails = new Set<string>();
+      cachedUsers.forEach(u => {
+        if (u.email) allEmails.add(u.email.toLowerCase());
+      });
+      cachedBookings.forEach(b => {
+        if (b.clientEmail) allEmails.add(b.clientEmail.toLowerCase());
+      });
+      const emailArray = Array.from(allEmails);
+      if (emailArray.length > 0) {
+        fetchUserCampaigns(emailArray);
+      }
+      setTimeout(() => {
+        fetchData(true, 1, false).catch(console.error);
+      }, 100);
+    } else {
+      fetchData(false, 1, false).catch(console.error);
+    }
+  }, [fetchData, fetchUserCampaigns]);
+
+  useEffect(() => {
+    const allEmails = new Set<string>();
+    
+    usersWithoutBookings.forEach(u => {
+      if (u.email) allEmails.add(u.email.toLowerCase());
+    });
+    
+    bookings.forEach(b => {
+      if (b.clientEmail) allEmails.add(b.clientEmail.toLowerCase());
+    });
+    
+    const emailArray = Array.from(allEmails);
+    if (emailArray.length > 0) {
+      fetchUserCampaigns(emailArray);
+    }
+  }, [usersWithoutBookings, bookings, fetchUserCampaigns]);
+
+  const loadMoreData = useCallback(() => {
+    if (!loadingMore && hasMoreData && !loading) {
+      const nextPage = currentPage + 1;
+      setCurrentPage(nextPage);
+      fetchData(true, nextPage, true).catch(console.error);
+    }
+  }, [currentPage, hasMoreData, loadingMore, loading, fetchData]);
+
+  const scrollSentinelRef = useCallback((node: HTMLTableRowElement | null) => {
+    if (!node) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting && hasMoreData && !loadingMore && !loading) {
+          loadMoreData();
+        }
+      },
+      {
+        rootMargin: '100px',
+        threshold: 0.1,
+      }
+    );
+
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [hasMoreData, loadingMore, loading, loadMoreData]);
+
+  useEffect(() => {
+    setCurrentPage(1);
+    setHasMoreData(true);
+  }, [statusFilter, typeFilter, utmFilter, fromDate, toDate, search]);
+
+  const unifiedData = useMemo<UnifiedRow[]>(() => {
+    const rows: UnifiedRow[] = [];
+
+    bookings.forEach((booking) => {
+      rows.push({
+        id: `booking-${booking.bookingId}`,
+        type: 'booking',
+        name: booking.clientName || 'Unknown',
+        email: booking.clientEmail,
+        phone: booking.clientPhone,
+        createdAt: booking.bookingCreatedAt,
+        scheduledTime: booking.scheduledEventStartTime,
+        source: booking.utmSource || 'direct',
+        status: booking.bookingStatus,
+        meetLink: booking.calendlyMeetLink && booking.calendlyMeetLink !== 'Not Provided' ? booking.calendlyMeetLink : undefined,
+        notes: booking.anythingToKnow,
+        bookingId: booking.bookingId,
+      });
+    });
+
+    usersWithoutBookings.forEach((user) => {
+      rows.push({
+        id: `user-${user.email}`,
+        type: 'user',
+        name: user.fullName || 'Not Provided',
+        email: user.email,
+        phone: user.phone !== 'Not Specified' ? user.phone : undefined,
+        createdAt: user.createdAt,
+        workAuthorization: user.workAuthorization,
+      });
+    });
+
+    return rows;
+  }, [bookings, usersWithoutBookings]);
+
+  const uniqueSources = useMemo(() => {
+    const sources = new Set<string>();
+    bookings.forEach((booking) => sources.add(booking.utmSource || 'direct'));
+    return Array.from(sources).sort();
+  }, [bookings]);
+
+  const filteredData = useMemo(() => {
+    return unifiedData
+      .filter((row) => {
+        if (typeFilter !== 'all' && row.type !== typeFilter) {
+          return false;
+        }
+        if (statusFilter !== 'all' && row.status !== statusFilter) {
+          return false;
+        }
+        if (utmFilter !== 'all' && (row.source || 'direct') !== utmFilter) {
+          return false;
+        }
+        if (fromDate) {
+          const from = startOfDay(parseISO(fromDate));
+          if (isBefore(parseISO(row.createdAt), from)) {
+            return false;
+          }
+        }
+        if (toDate) {
+          const to = endOfDay(parseISO(toDate));
+          if (isAfter(parseISO(row.createdAt), to)) {
+            return false;
+          }
+        }
+        if (search) {
+          const term = search.toLowerCase();
+          return (
+            row.name?.toLowerCase().includes(term) ||
+            row.email?.toLowerCase().includes(term) ||
+            row.source?.toLowerCase().includes(term)
+          );
+        }
+        return true;
+      })
+      .sort((a, b) => {
+        const aDate = a.scheduledTime ? parseISO(a.scheduledTime) : parseISO(a.createdAt);
+        const bDate = b.scheduledTime ? parseISO(b.scheduledTime) : parseISO(b.createdAt);
+        return bDate.getTime() - aDate.getTime();
+      });
+  }, [unifiedData, statusFilter, typeFilter, utmFilter, fromDate, toDate, search]);
+
+  const usersWithoutBookingsData = useMemo(() => {
+    return unifiedData.filter((row) => row.type === 'user');
+  }, [unifiedData]);
+
+  const filteredUsersWithoutBookings = useMemo(() => {
+    return usersWithoutBookingsData.filter((row) => {
+      if (search) {
+        const term = search.toLowerCase();
+        return (
+          row.name?.toLowerCase().includes(term) ||
+          row.email?.toLowerCase().includes(term)
+        );
+      }
+      if (fromDate) {
+        const from = startOfDay(parseISO(fromDate));
+        if (isBefore(parseISO(row.createdAt), from)) {
+          return false;
+        }
+      }
+      if (toDate) {
+        const to = endOfDay(parseISO(toDate));
+        if (isAfter(parseISO(row.createdAt), to)) {
+          return false;
+        }
+      }
+      return true;
+    });
+  }, [usersWithoutBookingsData, search, fromDate, toDate]);
+
+  const handleSelectAll = useCallback(() => {
+    if (selectedRows.size === filteredData.length) {
+      setSelectedRows(new Set());
+    } else {
+      setSelectedRows(new Set(filteredData.map((row) => row.id)));
+    }
+  }, [filteredData, selectedRows.size]);
+
+  const handleSelectRow = useCallback((id: string) => {
+    setSelectedRows((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  }, []);
+
+  const handleBulkEmail = useCallback(() => {
+    const selectedEmails = filteredData
+      .filter((row) => selectedRows.has(row.id))
+      .map((row) => row.email)
+      .filter(Boolean);
+
+    if (selectedEmails.length === 0) {
+      alert('Please select at least one row to send emails');
+      return;
+    }
+
+    onOpenEmailCampaign({
+      recipients: selectedEmails,
+      reason: 'bulk_action',
+    });
+  }, [selectedRows, filteredData, onOpenEmailCampaign]);
+
+  const handleUserCampaignsClick = useCallback(async (userEmail: string) => {
+    setSelectedUserEmail(userEmail);
+    setLoadingUserCampaigns(true);
+    setUserCampaignsList([]);
+
+    try {
+      const campaigns = userCampaigns.get(userEmail.toLowerCase()) || [];
+      if (campaigns.length > 0) {
+        setUserCampaignsList(campaigns);
+      } else {
+        // Fetch campaigns if not already loaded
+        const response = await fetch(`${API_BASE_URL}/api/email-campaigns/user/${encodeURIComponent(userEmail)}`);
+        const data = await response.json();
+        if (data.success && data.data) {
+          setUserCampaignsList(data.data);
+        } else {
+          alert('Failed to load campaigns: ' + (data.message || 'Unknown error'));
+        }
+      }
+    } catch (err) {
+      console.error('Error fetching user campaigns:', err);
+      alert('Failed to load campaigns. Please try again.');
+    } finally {
+      setLoadingUserCampaigns(false);
+    }
+  }, [userCampaigns]);
+
+  const handleCampaignClick = useCallback(async (campaignId: string, userEmail: string) => {
+    setSelectedCampaign({ campaignId, userEmail });
+    setLoadingCampaignDetails(true);
+    setCampaignDetails(null);
+
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/api/email-campaigns/${campaignId}/details/${encodeURIComponent(userEmail)}`
+      );
+      const data = await response.json();
+      if (data.success) {
+        setCampaignDetails(data.data);
+      } else {
+        alert('Failed to load campaign details: ' + (data.message || 'Unknown error'));
+      }
+    } catch (err) {
+      console.error('Error fetching campaign details:', err);
+      alert('Failed to load campaign details. Please try again.');
+    } finally {
+      setLoadingCampaignDetails(false);
+    }
+  }, []);
+
+  const handleCloseModal = useCallback(() => {
+    // Close details modal, but keep user campaigns modal open if it was open
+    setSelectedCampaign(null);
+    setCampaignDetails(null);
+  }, []);
+
+  const handleBackToCampaignsList = useCallback(() => {
+    // Close details modal and show campaigns list again
+    const userEmail = selectedCampaign?.userEmail;
+    setSelectedCampaign(null);
+    setCampaignDetails(null);
+    // Ensure the user campaigns modal is still open
+    if (userEmail) {
+      setSelectedUserEmail(userEmail);
+      // Reload campaigns list
+      const campaigns = userCampaigns.get(userEmail.toLowerCase()) || [];
+      setUserCampaignsList(campaigns);
+    }
+  }, [selectedCampaign, userCampaigns]);
+
+  const handleCloseUserCampaignsModal = useCallback(() => {
+    setSelectedUserEmail(null);
+    setUserCampaignsList([]);
+  }, []);
+
+  const handleStatusUpdate = async (bookingId: string, status: BookingStatus) => {
+    try {
+      setUpdatingBookingId(bookingId);
+      const response = await fetch(`${API_BASE_URL}/api/campaign-bookings/${bookingId}/status`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ status }),
+      });
+      const data = await response.json();
+      if (!data.success) {
+        throw new Error(data.message || 'Failed to update booking status');
+      }
+      setBookings((prev) => {
+        const updated = prev.map((booking) => (booking.bookingId === bookingId ? { ...booking, bookingStatus: status } : booking));
+        setCachedBookings(updated);
+        return updated;
+      });
+      if (status === 'no-show') {
+        const affected = bookingsById.get(bookingId);
+        if (affected?.clientEmail) {
+          onOpenEmailCampaign({
+            recipients: [affected.clientEmail],
+            reason: 'no_show_followup',
+          });
+        }
+      }
+    } catch (err) {
+      console.error(err);
+      alert(err instanceof Error ? err.message : 'Failed to update booking status');
+    } finally {
+      setUpdatingBookingId(null);
+    }
+  };
+
+  const handleReschedule = async (booking: Booking) => {
+    const defaultValue = booking.scheduledEventStartTime
+      ? format(parseISO(booking.scheduledEventStartTime), "yyyy-MM-dd'T'HH:mm")
+      : '';
+    const userInput = window.prompt(
+      'Enter the new meeting time (YYYY-MM-DD HH:mm). Time is interpreted in your local timezone.',
+      defaultValue,
+    );
+    if (!userInput) {
+      return;
+    }
+
+    let parsedDate: Date | null = null;
+    const normalizedInput = userInput.includes('T') ? userInput : userInput.replace(' ', 'T');
+    const potentialDate = new Date(normalizedInput);
+    if (!Number.isNaN(potentialDate.getTime())) {
+      parsedDate = potentialDate;
+    }
+
+    if (!parsedDate) {
+      alert('Invalid date/time provided. Please try again using the format YYYY-MM-DD HH:mm');
+      return;
+    }
+
+    const isoString = parsedDate.toISOString();
+
+    try {
+      setUpdatingBookingId(booking.bookingId);
+      const response = await fetch(`${API_BASE_URL}/api/campaign-bookings/${booking.bookingId}/reschedule`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ newTime: isoString }),
+      });
+      const data = await response.json();
+      if (!data.success) {
+        throw new Error(data.message || 'Failed to reschedule meeting');
+      }
+      const updatedBooking: Booking = data.data;
+      setBookings((prev) => {
+        const updated = prev.map((item) => (item.bookingId === updatedBooking.bookingId ? { ...item, ...updatedBooking } : item));
+        setCachedBookings(updated);
+        return updated;
+      });
+      alert('Meeting rescheduled and call queue updated successfully.');
+    } catch (err) {
+      console.error(err);
+      alert(err instanceof Error ? err.message : 'Failed to reschedule meeting');
+    } finally {
+      setUpdatingBookingId(null);
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="min-h-[60vh] flex items-center justify-center">
+        <Loader2 className="animate-spin text-orange-500" size={40} />
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="min-h-[60vh] flex flex-col items-center justify-center gap-4">
+        <AlertTriangle className="text-red-500" size={48} />
+        <p className="text-lg font-semibold text-red-600">{error}</p>
+        <button
+          onClick={() => {
+            setError(null);
+            setLoading(true);
+            setTimeout(() => {
+              fetchData();
+            }, 150);
+          }}
+          className="px-4 py-2 bg-orange-500 text-white rounded-lg hover:bg-orange-600 transition"
+        >
+          Retry
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-10 py-10 space-y-6">
+      <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+        <div>
+          <h3 className="text-sm uppercase tracking-wide text-slate-500 font-semibold mb-2">Unified Data View</h3>
+          <h2 className="text-3xl font-bold text-slate-900">All Bookings & Users</h2>
+          <p className="text-slate-500 mt-2 max-w-2xl">
+            View and manage all bookings and users who haven't booked meetings in one comprehensive table. Select multiple rows for bulk actions.
+          </p>
+        </div>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => {
+              clearAllCache();
+              fetchData(true);
+            }}
+            className="inline-flex items-center gap-2 px-4 py-2 bg-slate-900 text-white rounded-lg hover:bg-slate-800 transition text-sm font-semibold"
+          >
+            <RefreshCcw size={16} className={refreshing ? 'animate-spin' : ''} />
+            Refresh Data
+          </button>
+        </div>
+      </div>
+
+      {/* Users Without Meetings Section */}
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm">
+        <div className="border-b border-slate-200 px-6 py-4">
+          <div className="flex items-center justify-between">
+            <button
+              onClick={() => setIsUsersWithoutMeetingsExpanded(!isUsersWithoutMeetingsExpanded)}
+              className="flex items-center gap-3 flex-1 text-left hover:bg-slate-50 -mx-2 px-2 py-1 rounded-lg transition"
+              type="button"
+            >
+              {isUsersWithoutMeetingsExpanded ? (
+                <ChevronDown className="text-slate-600" size={20} />
+              ) : (
+                <ChevronRight className="text-slate-600" size={20} />
+              )}
+              <div className="flex-1">
+                <h3 className="text-lg font-semibold text-slate-900 flex items-center gap-2">
+                  <Users className="text-purple-600" size={20} />
+                  Users Without Meetings
+                </h3>
+                <p className="text-sm text-slate-500 mt-1">
+                  High intent users who signed up but haven't booked a meeting ({filteredUsersWithoutBookings.length} users)
+                </p>
+              </div>
+            </button>
+            {filteredUsersWithoutBookings.length > 0 && (
+              <button
+                onClick={() => {
+                  const emails = filteredUsersWithoutBookings.map((row) => row.email).filter(Boolean);
+                  onOpenEmailCampaign({
+                    recipients: emails,
+                    reason: 'users_without_meetings_bulk',
+                  });
+                }}
+                className="inline-flex items-center gap-2 px-4 py-2 bg-purple-500 text-white rounded-lg hover:bg-purple-600 transition text-sm font-semibold"
+              >
+                <Send size={16} />
+                Email All ({filteredUsersWithoutBookings.length})
+              </button>
+            )}
+          </div>
+        </div>
+        {isUsersWithoutMeetingsExpanded && (
+          <div className="p-6">
+            {filteredUsersWithoutBookings.length === 0 ? (
+              <div className="text-center py-12 text-slate-500">
+                <Users size={48} className="mx-auto mb-4 text-slate-300" />
+                <p className="font-semibold">No users without bookings found</p>
+                <p className="text-sm mt-1">All users who signed up have booked meetings.</p>
+              </div>
+            ) : (
+              <div className="border border-slate-200 rounded-xl overflow-hidden">
+                <div className="overflow-x-auto">
+                  <div className="max-h-[400px] overflow-y-auto">
+                  <table className="min-w-full divide-y divide-slate-200 text-sm">
+                    <thead className="bg-purple-50 sticky top-0 z-10">
+                      <tr className="text-left text-slate-600">
+                        <th className="px-4 py-3 font-semibold w-12">
+                          <button
+                            onClick={() => {
+                              const allUserIds = filteredUsersWithoutBookings.map((row) => row.id);
+                              const allSelected = allUserIds.every((id) => selectedRows.has(id));
+                              if (allSelected) {
+                                setSelectedRows((prev) => {
+                                  const next = new Set(prev);
+                                  allUserIds.forEach((id) => next.delete(id));
+                                  return next;
+                                });
+                              } else {
+                                setSelectedRows((prev) => {
+                                  const next = new Set(prev);
+                                  allUserIds.forEach((id) => next.add(id));
+                                  return next;
+                                });
+                              }
+                            }}
+                            className="flex items-center justify-center"
+                            type="button"
+                          >
+                            {filteredUsersWithoutBookings.length > 0 &&
+                            filteredUsersWithoutBookings.every((row) => selectedRows.has(row.id)) ? (
+                              <CheckSquare size={18} className="text-purple-600" />
+                            ) : (
+                              <Square size={18} className="text-slate-400" />
+                            )}
+                          </button>
+                        </th>
+                        <th className="px-4 py-3 font-semibold">Name</th>
+                        <th className="px-4 py-3 font-semibold">Email</th>
+                        <th className="px-4 py-3 font-semibold">Phone</th>
+                        <th className="px-4 py-3 font-semibold">Work Authorization</th>
+                        <th className="px-4 py-3 font-semibold">Signed Up</th>
+                        <th className="px-4 py-3 font-semibold">Campaigns Sent</th>
+                        <th className="px-4 py-3 font-semibold">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 bg-white">
+                      {filteredUsersWithoutBookings.map((row) => {
+                        const createdDate = format(parseISO(row.createdAt), 'MMM d, yyyy • h:mm a');
+                        const isSelected = selectedRows.has(row.id);
+                        const userData = usersByEmail.get(row.email.toLowerCase());
+
+                        return (
+                          <tr
+                            key={row.id}
+                            className={`hover:bg-purple-50/50 transition ${isSelected ? 'bg-purple-50' : ''}`}
+                          >
+                            <td className="px-4 py-4">
+                              <button
+                                onClick={() => handleSelectRow(row.id)}
+                                className="flex items-center justify-center"
+                                type="button"
+                              >
+                                {isSelected ? (
+                                  <CheckSquare size={18} className="text-purple-600" />
+                                ) : (
+                                  <Square size={18} className="text-slate-400" />
+                                )}
+                              </button>
+                            </td>
+                            <td className="px-4 py-4">
+                              <div className="font-semibold text-slate-900">{row.name}</div>
+                            </td>
+                            <td className="px-4 py-4">
+                              <div className="text-slate-700">{row.email}</div>
+                            </td>
+                            <td className="px-4 py-4">
+                              {row.phone && row.phone !== 'Not Specified' ? (
+                                <a
+                                  href={`tel:${row.phone}`}
+                                  className="text-xs text-purple-600 font-semibold hover:text-purple-700"
+                                >
+                                  {row.phone}
+                                </a>
+                              ) : (
+                                <span className="text-slate-400 text-xs">—</span>
+                              )}
+                            </td>
+                            <td className="px-4 py-4">
+                              <span
+                                className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold ${
+                                  userData?.workAuthorization?.toLowerCase() === 'yes'
+                                    ? 'bg-green-100 text-green-800'
+                                    : 'bg-slate-100 text-slate-600'
+                                }`}
+                              >
+                                {userData?.workAuthorization || 'Not Specified'}
+                              </span>
+                            </td>
+                            <td className="px-4 py-4 text-slate-600">{createdDate}</td>
+                            <td className="px-4 py-4">
+                              {(() => {
+                                const emailLower = row.email.toLowerCase();
+                                const isLoading = loadingCampaignsForEmails.has(emailLower);
+                                const campaigns = userCampaigns.get(emailLower) || [];
+                                
+                                if (isLoading) {
+                                  return (
+                                    <div className="flex items-center gap-2 text-slate-500">
+                                      <Loader2 className="animate-spin" size={14} />
+                                      <span className="text-xs">Loading...</span>
+                                    </div>
+                                  );
+                                }
+                                
+                                if (campaigns.length === 0) {
+                                  return <span className="text-slate-400 text-xs">No campaigns</span>;
+                                }
+                                
+                                return (
+                                  <div className="space-y-1 max-w-xs">
+                                    <button
+                                      onClick={() => handleUserCampaignsClick(row.email)}
+                                      className="flex items-center gap-2 text-xs hover:bg-purple-50 rounded px-2 py-1 transition cursor-pointer w-full text-left border border-purple-200 hover:border-purple-300"
+                                      type="button"
+                                    >
+                                      <Mail className="text-purple-500" size={14} />
+                                      <span className="text-purple-700 font-semibold">
+                                        {campaigns.length} campaign{campaigns.length > 1 ? 's' : ''}
+                                      </span>
+                                      <span className="text-slate-400 ml-auto">
+                                        View all →
+                                      </span>
+                                    </button>
+                                  </div>
+                                );
+                              })()}
+                            </td>
+                            <td className="px-4 py-4">
+                              <button
+                                onClick={() => {
+                                  onOpenEmailCampaign({
+                                    recipients: [row.email],
+                                    reason: 'user_without_booking',
+                                  });
+                                }}
+                                className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold bg-purple-500 text-white hover:bg-purple-600 transition"
+                              >
+                                <Mail size={14} />
+                                Reach Out
+                              </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {selectedRows.size > 0 && (
+        <div className="bg-orange-50 border border-orange-200 rounded-lg px-4 py-3 flex items-center justify-between">
+          <span className="text-sm font-semibold text-orange-900">
+            {selectedRows.size} row{selectedRows.size > 1 ? 's' : ''} selected
+          </span>
+          <button
+            onClick={handleBulkEmail}
+            className="inline-flex items-center gap-2 px-4 py-2 bg-orange-500 text-white rounded-lg hover:bg-orange-600 transition text-sm font-semibold"
+          >
+            <Send size={16} />
+            Send Email Campaign ({selectedRows.size})
+          </button>
+        </div>
+      )}
+
+      <div className="flex flex-wrap items-center gap-4 bg-white rounded-lg border border-slate-200 p-4">
+        <div className="flex items-center gap-3 border border-slate-200 rounded-lg px-3 py-2">
+          <Search size={16} className="text-slate-400" />
+          <input
+            type="text"
+            placeholder="Search by name, email, or source…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="text-sm bg-transparent focus:outline-none"
+          />
+        </div>
+        <select
+          value={typeFilter}
+          onChange={(e) => setTypeFilter(e.target.value as 'all' | 'booking' | 'user')}
+          className="text-sm border border-slate-200 rounded-lg px-3 py-2 bg-white"
+        >
+          <option value="all">All types</option>
+          <option value="booking">Bookings only</option>
+          <option value="user">Users without bookings</option>
+        </select>
+        <select
+          value={statusFilter}
+          onChange={(e) => setStatusFilter(e.target.value as BookingStatus | 'all')}
+          className="text-sm border border-slate-200 rounded-lg px-3 py-2 bg-white"
+        >
+          <option value="all">All statuses</option>
+          {(['scheduled', 'completed', 'rescheduled', 'no-show', 'canceled'] as BookingStatus[]).map((status) => (
+            <option key={status} value={status}>
+              {statusLabels[status]}
+            </option>
+          ))}
+        </select>
+        <select
+          value={utmFilter}
+          onChange={(e) => setUtmFilter(e.target.value)}
+          className="text-sm border border-slate-200 rounded-lg px-3 py-2 bg-white min-w-[160px]"
+        >
+          <option value="all">All sources</option>
+          {uniqueSources.map((source) => (
+            <option key={source} value={source}>
+              {source}
+            </option>
+          ))}
+        </select>
+        <div className="flex items-center gap-2 text-sm text-slate-500">
+          <input
+            type="date"
+            value={fromDate}
+            onChange={(e) => setFromDate(e.target.value)}
+            className="border border-slate-200 rounded-lg px-3 py-2 bg-white"
+          />
+          <span>—</span>
+          <input
+            type="date"
+            value={toDate}
+            onChange={(e) => setToDate(e.target.value)}
+            className="border border-slate-200 rounded-lg px-3 py-2 bg-white"
+          />
+        </div>
+        {(fromDate || toDate || search || statusFilter !== 'all' || utmFilter !== 'all' || typeFilter !== 'all') && (
+          <button
+            onClick={() => {
+              setFromDate('');
+              setToDate('');
+              setStatusFilter('all');
+              setTypeFilter('all');
+              setUtmFilter('all');
+              setSearch('');
+            }}
+            className="text-sm text-orange-600 font-semibold"
+          >
+            Clear filters
+          </button>
+        )}
+      </div>
+
+      <div className="border border-slate-200 rounded-2xl overflow-hidden bg-white">
+        <div className="overflow-x-auto">
+          <div className="max-h-[600px] overflow-y-auto">
+            <table className="min-w-full divide-y divide-slate-200 text-sm">
+              <thead className="bg-slate-50 sticky top-0 z-10">
+                <tr className="text-left text-slate-500">
+                  <th className="px-4 py-3 font-semibold w-12">
+                    <button
+                      onClick={handleSelectAll}
+                      className="flex items-center justify-center"
+                      type="button"
+                    >
+                      {selectedRows.size === filteredData.length && filteredData.length > 0 ? (
+                        <CheckSquare size={18} className="text-orange-600" />
+                      ) : (
+                        <Square size={18} className="text-slate-400" />
+                      )}
+                    </button>
+                  </th>
+                  <th className="px-4 py-3 font-semibold">Type</th>
+                  <th className="px-4 py-3 font-semibold">Name</th>
+                  <th className="px-4 py-3 font-semibold">Email</th>
+                  <th className="px-4 py-3 font-semibold">Phone</th>
+                  <th className="px-4 py-3 font-semibold">Created/Signed Up</th>
+                  <th className="px-4 py-3 font-semibold">Meeting Time</th>
+                  <th className="px-4 py-3 font-semibold">Source</th>
+                  <th className="px-4 py-3 font-semibold">Status</th>
+                  <th className="px-4 py-3 font-semibold">Campaigns</th>
+                  <th className="px-4 py-3 font-semibold">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {filteredData.map((row) => {
+                  const isBooking = row.type === 'booking';
+                  const scheduledDate = row.scheduledTime
+                    ? format(parseISO(row.scheduledTime), 'MMM d, yyyy • h:mm a')
+                    : 'Not scheduled';
+                  const createdDate = format(parseISO(row.createdAt), 'MMM d, yyyy • h:mm a');
+                  const isSelected = selectedRows.has(row.id);
+
+                  return (
+                    <tr
+                      key={row.id}
+                      className={`hover:bg-slate-50/60 transition ${isSelected ? 'bg-orange-50' : ''}`}
+                    >
+                      <td className="px-4 py-4">
+                        <button
+                          onClick={() => handleSelectRow(row.id)}
+                          className="flex items-center justify-center"
+                          type="button"
+                        >
+                          {isSelected ? (
+                            <CheckSquare size={18} className="text-orange-600" />
+                          ) : (
+                            <Square size={18} className="text-slate-400" />
+                          )}
+                        </button>
+                      </td>
+                      <td className="px-4 py-4">
+                        <span
+                          className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold ${
+                            isBooking
+                              ? 'bg-blue-100 text-blue-800'
+                              : 'bg-purple-100 text-purple-800'
+                          }`}
+                        >
+                          {isBooking ? 'Booking' : 'User'}
+                        </span>
+                      </td>
+                      <td className="px-4 py-4">
+                        <div className="font-semibold text-slate-900">{row.name}</div>
+                      </td>
+                      <td className="px-4 py-4">
+                        <div className="text-slate-700">{row.email}</div>
+                      </td>
+                      <td className="px-4 py-4">
+                        {row.phone && row.phone !== 'Not Specified' ? (
+                          <a
+                            href={`tel:${row.phone}`}
+                            className="text-xs text-orange-600 font-semibold hover:text-orange-700"
+                          >
+                            {row.phone}
+                          </a>
+                        ) : (
+                          <span className="text-slate-400 text-xs">—</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-4 text-slate-600">{createdDate}</td>
+                      <td className="px-4 py-4 text-slate-600">
+                        {isBooking ? scheduledDate : <span className="text-slate-400">—</span>}
+                      </td>
+                      <td className="px-4 py-4">
+                        {row.source ? (
+                          <span className="inline-flex items-center px-2.5 py-1 rounded-full bg-slate-100 text-xs font-semibold text-slate-600">
+                            {row.source}
+                          </span>
+                        ) : (
+                          <span className="text-slate-400 text-xs">—</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-4">
+                        {row.status ? (
+                          <span
+                            className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold ${statusColors[row.status]}`}
+                          >
+                            {statusLabels[row.status]}
+                          </span>
+                        ) : (
+                          <span className="text-slate-400 text-xs">—</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-4">
+                        {(() => {
+                          const emailLower = row.email.toLowerCase();
+                          const isLoading = loadingCampaignsForEmails.has(emailLower);
+                          const campaigns = userCampaigns.get(emailLower) || [];
+                          const booking = isBooking && row.bookingId ? bookingsById.get(row.bookingId) : null;
+                          
+                          return (
+                            <div className="space-y-2 max-w-xs">
+                              {/* Email Campaigns */}
+                              {isLoading ? (
+                                <div className="flex items-center gap-2 text-slate-500">
+                                  <Loader2 className="animate-spin" size={14} />
+                                  <span className="text-xs">Loading...</span>
+                                </div>
+                              ) : campaigns.length > 0 ? (
+                                <button
+                                  onClick={() => handleUserCampaignsClick(row.email)}
+                                  className="flex items-center gap-2 text-xs hover:bg-slate-50 rounded px-2 py-1 transition cursor-pointer w-full text-left border border-slate-200 hover:border-orange-300"
+                                  type="button"
+                                >
+                                  <Mail className="text-orange-500" size={14} />
+                                  <span className="text-slate-700 font-semibold">
+                                    {campaigns.length} campaign{campaigns.length > 1 ? 's' : ''}
+                                  </span>
+                                  <span className="text-slate-400 ml-auto">
+                                    View all →
+                                  </span>
+                                </button>
+                              ) : (
+                                <span className="text-slate-400 text-xs">No campaigns</span>
+                              )}
+                              
+                              {/* Scheduled Information */}
+                              {booking && (
+                                <div className="space-y-1 pt-1 border-t border-slate-200">
+                                  {booking.scheduledEventStartTime && (
+                                    <div className="flex items-center gap-1.5 text-xs text-slate-600">
+                                      <Calendar size={12} className="text-blue-500" />
+                                      <span>Meeting: {format(parseISO(booking.scheduledEventStartTime), 'MMM d, h:mm a')}</span>
+                                    </div>
+                                  )}
+                                  {booking.reminderCallJobId && (
+                                    <div className="flex items-center gap-1.5 text-xs text-blue-600">
+                                      <Clock size={12} />
+                                      <span>Reminder call scheduled</span>
+                                    </div>
+                                  )}
+                                  {booking.paymentReminders && booking.paymentReminders.length > 0 && (
+                                    <div className="flex items-center gap-1.5 text-xs text-amber-600">
+                                      <Clock size={12} />
+                                      <span>{booking.paymentReminders.length} payment reminder{booking.paymentReminders.length > 1 ? 's' : ''}</span>
+                                    </div>
+                                  )}
+                                  {booking.rescheduledCount && booking.rescheduledCount > 0 && (
+                                    <div className="flex items-center gap-1.5 text-xs text-purple-600">
+                                      <RefreshCcw size={12} />
+                                      <span>Rescheduled {booking.rescheduledCount} time{booking.rescheduledCount > 1 ? 's' : ''}</span>
+                                    </div>
+                                  )}
+                                  {booking.whatsappReminderSent && (
+                                    <div className="flex items-center gap-1.5 text-xs text-green-600">
+                                      <Mail size={12} />
+                                      <span>WhatsApp sent</span>
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })()}
+                      </td>
+                      <td className="px-4 py-4 space-y-2">
+                        {isBooking && row.bookingId ? (
+                          row.status === 'completed' ? (
+                            <span className="text-xs text-slate-400 italic">No actions available</span>
+                          ) : (
+                            <div className="flex flex-wrap items-center gap-2">
+                              {row.meetLink && (
+                                <a
+                                  href={row.meetLink}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold bg-white border border-slate-200 hover:border-orange-400 hover:text-orange-600 transition"
+                                >
+                                  <ExternalLink size={14} />
+                                  Join
+                                </a>
+                              )}
+                              <button
+                                onClick={() => {
+                                  const booking = bookingsById.get(row.bookingId!);
+                                  if (booking) {
+                                    handleStatusUpdate(booking.bookingId, 'completed');
+                                  }
+                                }}
+                                disabled={updatingBookingId === row.bookingId}
+                                className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold bg-green-500 text-white hover:bg-green-600 transition disabled:opacity-60"
+                              >
+                                {updatingBookingId === row.bookingId ? (
+                                  <Loader2 className="animate-spin" size={14} />
+                                ) : (
+                                  <CheckCircle2 size={14} />
+                                )}
+                                Completed
+                              </button>
+                              <button
+                                onClick={() => {
+                                  const booking = bookingsById.get(row.bookingId!);
+                                  if (booking) {
+                                    handleStatusUpdate(
+                                      booking.bookingId,
+                                      booking.bookingStatus === 'no-show' ? 'scheduled' : 'no-show',
+                                    );
+                                  }
+                                }}
+                                disabled={updatingBookingId === row.bookingId}
+                                className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold bg-white border border-rose-300 text-rose-600 hover:bg-rose-50 transition disabled:opacity-60"
+                              >
+                                {updatingBookingId === row.bookingId ? (
+                                  <Loader2 className="animate-spin" size={14} />
+                                ) : (
+                                  <AlertTriangle size={14} />
+                                )}
+                                {row.status === 'no-show' ? 'Clear No-Show' : 'Mark No-Show'}
+                              </button>
+                              <button
+                                onClick={() => {
+                                  const booking = bookingsById.get(row.bookingId!);
+                                  if (booking) {
+                                    handleReschedule(booking);
+                                  }
+                                }}
+                                disabled={updatingBookingId === row.bookingId}
+                                className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold bg-white border border-amber-300 text-amber-600 hover:bg-amber-50 transition disabled:opacity-60"
+                              >
+                                {updatingBookingId === row.bookingId ? (
+                                  <Loader2 className="animate-spin" size={14} />
+                                ) : (
+                                  <Clock size={14} />
+                                )}
+                                Reschedule
+                              </button>
+                            </div>
+                          )
+                        ) : (
+                          <button
+                            onClick={() => {
+                              onOpenEmailCampaign({
+                                recipients: [row.email],
+                                reason: 'user_without_booking',
+                              });
+                            }}
+                            className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold bg-orange-500 text-white hover:bg-orange-600 transition"
+                          >
+                            <Mail size={14} />
+                            Reach Out
+                          </button>
+                        )}
+                        {row.notes && (
+                          <div className="text-xs text-slate-500 bg-slate-100 rounded-lg px-3 py-2 border border-slate-200 mt-2">
+                            <span className="font-semibold text-slate-600">Notes:</span> {row.notes}
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+                {filteredData.length === 0 && (
+                  <tr>
+                    <td colSpan={11} className="text-center py-12 text-sm text-slate-500">
+                      No data matches your filters. Try adjusting the criteria.
+                    </td>
+                  </tr>
+                )}
+                {hasMoreData && filteredData.length > 0 && (
+                  <tr ref={scrollSentinelRef} className="h-1">
+                    <td colSpan={11} className="p-0">
+                      {loadingMore && (
+                        <div className="flex items-center justify-center py-4">
+                          <Loader2 className="animate-spin text-orange-500" size={20} />
+                          <span className="ml-2 text-sm text-slate-600">Loading more...</span>
+                        </div>
+                      )}
+                    </td>
+                  </tr>
+                )}
+                {!hasMoreData && filteredData.length > ITEMS_PER_PAGE && (
+                  <tr>
+                    <td colSpan={11} className="px-4 py-4 text-center text-sm text-slate-500">
+                      All data loaded ({filteredData.length} items)
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+      <p className="text-xs text-slate-500">
+        Showing {filteredData.length} of {unifiedData.length} total rows ({bookings.length} bookings,{' '}
+        {usersWithoutBookings.length} users without bookings).
+      </p>
+
+      {/* User Campaigns List Modal */}
+      {selectedUserEmail && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={handleCloseUserCampaignsModal}>
+          <div
+            className="bg-white rounded-2xl shadow-2xl max-w-5xl w-full max-h-[90vh] overflow-y-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="sticky top-0 bg-white border-b border-slate-200 px-6 py-4 flex items-center justify-between z-10">
+              <h3 className="text-xl font-bold text-slate-900 flex items-center gap-2">
+                <Mail className="text-orange-500" size={24} />
+                Email Campaigns for {selectedUserEmail}
+              </h3>
+              <button
+                onClick={handleCloseUserCampaignsModal}
+                className="p-2 hover:bg-slate-100 rounded-lg transition"
+                type="button"
+              >
+                <X size={20} className="text-slate-500" />
+              </button>
+            </div>
+
+            <div className="p-6">
+              {loadingUserCampaigns ? (
+                <div className="flex items-center justify-center py-12">
+                  <Loader2 className="animate-spin text-orange-500" size={32} />
+                  <span className="ml-3 text-slate-600">Loading campaigns...</span>
+                </div>
+              ) : userCampaignsList.length > 0 ? (
+                <div className="overflow-x-auto">
+                  <table className="min-w-full divide-y divide-slate-200 text-sm">
+                    <thead className="bg-slate-50">
+                      <tr>
+                        <th className="px-4 py-3 text-left font-semibold text-slate-700">Provider</th>
+                        <th className="px-4 py-3 text-left font-semibold text-slate-700">Template Name</th>
+                        <th className="px-4 py-3 text-left font-semibold text-slate-700">Status</th>
+                        <th className="px-4 py-3 text-left font-semibold text-slate-700">Sent At</th>
+                        <th className="px-4 py-3 text-left font-semibold text-slate-700">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 bg-white">
+                      {userCampaignsList.map((campaign) => (
+                        <tr key={campaign._id} className="hover:bg-slate-50 transition">
+                          <td className="px-4 py-4">
+                            <span
+                              className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold ${
+                                campaign.provider === 'mailchimp'
+                                  ? 'bg-purple-100 text-purple-800'
+                                  : 'bg-blue-100 text-blue-800'
+                              }`}
+                            >
+                              {campaign.provider === 'mailchimp' ? 'Mailchimp' : 'SendGrid'}
+                            </span>
+                          </td>
+                          <td className="px-4 py-4">
+                            <div className="font-medium text-slate-900">{campaign.templateName || 'N/A'}</div>
+                          </td>
+                          <td className="px-4 py-4">
+                            <span
+                              className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold ${
+                                campaign.status === 'SUCCESS' || campaign.status === 'success'
+                                  ? 'bg-green-100 text-green-800'
+                                  : 'bg-red-100 text-red-800'
+                              }`}
+                            >
+                              {campaign.status === 'SUCCESS' || campaign.status === 'success' ? 'SUCCESS' : 'FAILED'}
+                            </span>
+                          </td>
+                          <td className="px-4 py-4 text-slate-600">
+                            {format(parseISO(campaign.sentAt || campaign.createdAt), 'MMM d, yyyy • h:mm a')}
+                          </td>
+                          <td className="px-4 py-4">
+                            <button
+                              onClick={() => {
+                                // Keep the user campaigns modal open, just open details modal on top
+                                handleCampaignClick(campaign._id, selectedUserEmail);
+                              }}
+                              className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold bg-orange-500 text-white hover:bg-orange-600 transition"
+                              type="button"
+                            >
+                              <Info size={14} />
+                              View Details
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="text-center py-12">
+                  <Mail className="mx-auto mb-4 text-slate-300" size={48} />
+                  <p className="text-slate-600 font-semibold">No campaigns found</p>
+                  <p className="text-slate-400 text-sm mt-1">No emails have been sent to this user yet.</p>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Campaign Details Modal */}
+      {selectedCampaign && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[60] p-4" onClick={handleCloseModal}>
+          <div
+            className="bg-white rounded-2xl shadow-2xl max-w-4xl w-full max-h-[90vh] overflow-y-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="sticky top-0 bg-white border-b border-slate-200 px-6 py-4 flex items-center justify-between z-10">
+              <div className="flex items-center gap-3">
+                {selectedUserEmail && (
+                  <button
+                    onClick={handleBackToCampaignsList}
+                    className="p-2 hover:bg-slate-100 rounded-lg transition"
+                    type="button"
+                    title="Back to campaigns list"
+                  >
+                    <ArrowLeft size={20} className="text-slate-600" />
+                  </button>
+                )}
+                <h3 className="text-xl font-bold text-slate-900 flex items-center gap-2">
+                  <Info className="text-orange-500" size={24} />
+                  Campaign Details
+                </h3>
+              </div>
+              <button
+                onClick={handleCloseModal}
+                className="p-2 hover:bg-slate-100 rounded-lg transition"
+                type="button"
+              >
+                <X size={20} className="text-slate-500" />
+              </button>
+            </div>
+
+            <div className="p-6">
+              {loadingCampaignDetails ? (
+                <div className="flex items-center justify-center py-12">
+                  <Loader2 className="animate-spin text-orange-500" size={32} />
+                  <span className="ml-3 text-slate-600">Loading campaign details...</span>
+                </div>
+              ) : campaignDetails ? (
+                <div className="space-y-6">
+                  {/* Campaign Overview */}
+                  <div className="bg-slate-50 rounded-xl p-6 border border-slate-200">
+                    <h4 className="text-lg font-semibold text-slate-900 mb-4">Campaign Overview</h4>
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                      <div>
+                        <p className="text-xs text-slate-500 mb-1">Provider</p>
+                        <p className="font-semibold text-slate-900">
+                          {campaignDetails.campaign.provider === 'mailchimp' ? 'Mailchimp' : 'SendGrid'}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-xs text-slate-500 mb-1">Template Name</p>
+                        <p className="font-semibold text-slate-900">{campaignDetails.campaign.templateName}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs text-slate-500 mb-1">Status</p>
+                        <span
+                          className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold ${
+                            campaignDetails.campaign.status === 'SUCCESS'
+                              ? 'bg-green-100 text-green-800'
+                              : campaignDetails.campaign.status === 'PARTIAL'
+                              ? 'bg-amber-100 text-amber-800'
+                              : 'bg-red-100 text-red-800'
+                          }`}
+                        >
+                          {campaignDetails.campaign.status}
+                        </span>
+                      </div>
+                      <div>
+                        <p className="text-xs text-slate-500 mb-1">Total Sent</p>
+                        <p className="font-semibold text-slate-900">{campaignDetails.campaign.total}</p>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* What Was Sent */}
+                  <div className="bg-white rounded-xl border border-slate-200 p-6">
+                    <h4 className="text-lg font-semibold text-slate-900 mb-4">What Was Sent</h4>
+                    <div className="overflow-x-auto">
+                      <table className="min-w-full divide-y divide-slate-200 text-sm">
+                        <thead className="bg-slate-50">
+                          <tr>
+                            <th className="px-4 py-3 text-left font-semibold text-slate-700">Field</th>
+                            <th className="px-4 py-3 text-left font-semibold text-slate-700">Value</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          <tr>
+                            <td className="px-4 py-3 text-slate-600 font-medium">Recipient Email</td>
+                            <td className="px-4 py-3 text-slate-900">{campaignDetails.userEmailDetails.email}</td>
+                          </tr>
+                          <tr>
+                            <td className="px-4 py-3 text-slate-600 font-medium">Send Status</td>
+                            <td className="px-4 py-3">
+                              <span
+                                className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold ${
+                                  campaignDetails.userEmailDetails.status === 'SUCCESS'
+                                    ? 'bg-green-100 text-green-800'
+                                    : 'bg-red-100 text-red-800'
+                                }`}
+                              >
+                                {campaignDetails.userEmailDetails.status}
+                              </span>
+                            </td>
+                          </tr>
+                          <tr>
+                            <td className="px-4 py-3 text-slate-600 font-medium">Sent At</td>
+                            <td className="px-4 py-3 text-slate-900">
+                              {format(parseISO(campaignDetails.userEmailDetails.sentAt), 'MMM d, yyyy • h:mm a')}
+                            </td>
+                          </tr>
+                          <tr>
+                            <td className="px-4 py-3 text-slate-600 font-medium">Template ID</td>
+                            <td className="px-4 py-3 text-slate-900 font-mono text-xs">
+                              {campaignDetails.campaign.templateId}
+                            </td>
+                          </tr>
+                          <tr>
+                            <td className="px-4 py-3 text-slate-600 font-medium">Domain Name</td>
+                            <td className="px-4 py-3 text-slate-900">{campaignDetails.campaign.domainName}</td>
+                          </tr>
+                          {campaignDetails.userEmailDetails.error && (
+                            <tr>
+                              <td className="px-4 py-3 text-slate-600 font-medium">Error</td>
+                              <td className="px-4 py-3 text-red-600">{campaignDetails.userEmailDetails.error}</td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  {/* Time Window */}
+                  <div className="bg-blue-50 rounded-xl border border-blue-200 p-6">
+                    <h4 className="text-lg font-semibold text-slate-900 mb-4 flex items-center gap-2">
+                      <Clock className="text-blue-600" size={20} />
+                      Time Window Analysis
+                    </h4>
+                    <div className="space-y-2 text-sm">
+                      <div className="flex items-center justify-between">
+                        <span className="text-slate-600">Window Start:</span>
+                        <span className="font-semibold text-slate-900">
+                          {format(parseISO(campaignDetails.timeWindow.start), 'MMM d, yyyy • h:mm a')}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-slate-600">Window End:</span>
+                        <span className="font-semibold text-slate-900">
+                          {campaignDetails.timeWindow.hasNextEmail
+                            ? format(parseISO(campaignDetails.timeWindow.end), 'MMM d, yyyy • h:mm a')
+                            : 'Present (No next email)'}
+                        </span>
+                      </div>
+                      {campaignDetails.timeWindow.nextEmailDate && (
+                        <div className="flex items-center justify-between">
+                          <span className="text-slate-600">Next Email Sent:</span>
+                          <span className="font-semibold text-slate-900">
+                            {format(parseISO(campaignDetails.timeWindow.nextEmailDate), 'MMM d, yyyy • h:mm a')}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Booking Status */}
+                  <div
+                    className={`rounded-xl border p-6 ${
+                      campaignDetails.bookedAfterEmail
+                        ? 'bg-green-50 border-green-200'
+                        : 'bg-slate-50 border-slate-200'
+                    }`}
+                  >
+                    <h4 className="text-lg font-semibold text-slate-900 mb-4 flex items-center gap-2">
+                      {campaignDetails.bookedAfterEmail ? (
+                        <CheckCircle2 className="text-green-600" size={20} />
+                      ) : (
+                        <AlertTriangle className="text-slate-400" size={20} />
+                      )}
+                      Booking Status After Email
+                    </h4>
+                    <div className="mb-4">
+                      <p className={`text-lg font-bold ${campaignDetails.bookedAfterEmail ? 'text-green-700' : 'text-slate-600'}`}>
+                        {campaignDetails.bookedAfterEmail
+                          ? `✅ User booked ${campaignDetails.bookingCount} meeting${campaignDetails.bookingCount > 1 ? 's' : ''} after this email`
+                          : '❌ User did not book a meeting after this email'}
+                      </p>
+                    </div>
+
+                    {campaignDetails.bookingsAfterEmail.length > 0 && (
+                      <div className="mt-4">
+                        <h5 className="font-semibold text-slate-900 mb-3">Bookings Made:</h5>
+                        <div className="overflow-x-auto">
+                          <table className="min-w-full divide-y divide-slate-200 text-sm">
+                            <thead className="bg-white">
+                              <tr>
+                                <th className="px-4 py-2 text-left font-semibold text-slate-700">Booking ID</th>
+                                <th className="px-4 py-2 text-left font-semibold text-slate-700">Client Name</th>
+                                <th className="px-4 py-2 text-left font-semibold text-slate-700">Booked At</th>
+                                <th className="px-4 py-2 text-left font-semibold text-slate-700">Meeting Time</th>
+                                <th className="px-4 py-2 text-left font-semibold text-slate-700">Status</th>
+                                <th className="px-4 py-2 text-left font-semibold text-slate-700">Actions</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100 bg-white">
+                              {campaignDetails.bookingsAfterEmail.map((booking) => (
+                                <tr key={booking.bookingId}>
+                                  <td className="px-4 py-3 text-slate-900 font-mono text-xs">{booking.bookingId}</td>
+                                  <td className="px-4 py-3 text-slate-900">{booking.clientName}</td>
+                                  <td className="px-4 py-3 text-slate-600">
+                                    {format(parseISO(booking.bookingCreatedAt), 'MMM d, yyyy • h:mm a')}
+                                  </td>
+                                  <td className="px-4 py-3 text-slate-600">
+                                    {booking.scheduledEventStartTime
+                                      ? format(parseISO(booking.scheduledEventStartTime), 'MMM d, yyyy • h:mm a')
+                                      : '—'}
+                                  </td>
+                                  <td className="px-4 py-3">
+                                    <span
+                                      className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold ${statusColors[booking.bookingStatus as BookingStatus]}`}
+                                    >
+                                      {statusLabels[booking.bookingStatus as BookingStatus]}
+                                    </span>
+                                  </td>
+                                  <td className="px-4 py-3">
+                                    {booking.calendlyMeetLink && booking.calendlyMeetLink !== 'Not Provided' ? (
+                                      <a
+                                        href={booking.calendlyMeetLink}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold bg-blue-500 text-white hover:bg-blue-600 transition"
+                                      >
+                                        <ExternalLink size={14} />
+                                        Join
+                                      </a>
+                                    ) : (
+                                      <span className="text-slate-400 text-xs">—</span>
+                                    )}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <div className="text-center py-12">
+                  <AlertTriangle className="mx-auto mb-4 text-slate-400" size={48} />
+                  <p className="text-slate-600">Failed to load campaign details</p>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
