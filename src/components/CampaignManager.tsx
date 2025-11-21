@@ -19,11 +19,13 @@ interface Campaign {
   utmMedium: string;
   generatedUrl: string;
   totalClicks: number;
+  totalButtonClicks?: number;
   uniqueVisitorsCount: number;
   totalBookings: number;
   isActive: boolean;
   createdAt: string;
   pageVisits?: any[];
+  buttonClicks?: any[];
 }
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://api.flashfirejobs.com';
@@ -106,17 +108,36 @@ export default function CampaignManager() {
     });
   };
 
+  const getFilteredButtonClicks = (campaign: Campaign) => {
+    if (!fromDate || !toDate) {
+      return campaign.buttonClicks || [];
+    }
+
+    const startDate = new Date(fromDate);
+    startDate.setHours(0, 0, 0, 0);
+    const endDate = new Date(toDate);
+    endDate.setHours(23, 59, 59, 999);
+
+    return (campaign.buttonClicks || []).filter((click: any) => {
+      const clickDate = new Date(click.timestamp);
+      return clickDate >= startDate && clickDate <= endDate;
+    });
+  };
+
   const getFilteredMetrics = (campaign: Campaign) => {
     const filteredBookings = getFilteredBookings(campaign.utmSource);
     const filteredVisits = getFilteredPageVisits(campaign);
+    const filteredButtonClicks = getFilteredButtonClicks(campaign);
 
     const uniqueVisitorIds = new Set(filteredVisits.map((visit: any) => visit.visitorId));
 
     return {
       totalClicks: filteredVisits.length,
+      totalButtonClicks: filteredButtonClicks.length,
       uniqueVisitors: uniqueVisitorIds.size,
       totalBookings: filteredBookings.length,
       bookings: filteredBookings,
+      buttonClicks: filteredButtonClicks,
     };
   };
 
@@ -181,8 +202,10 @@ export default function CampaignManager() {
     setSelectedCampaign({
       ...campaign,
       totalClicks: filteredMetrics.totalClicks,
+      totalButtonClicks: filteredMetrics.totalButtonClicks || 0,
       uniqueVisitorsCount: filteredMetrics.uniqueVisitors,
       totalBookings: filteredMetrics.totalBookings,
+      buttonClicks: filteredMetrics.buttonClicks || [],
     });
     setShowStatsModal(true);
   };
@@ -378,14 +401,24 @@ export default function CampaignManager() {
                       </div>
                     </div>
 
-                    <div className="p-4 grid grid-cols-3 gap-2 text-center border-b border-gray-100">
+                    <div className="p-4 grid grid-cols-2 md:grid-cols-4 gap-2 text-center border-b border-gray-100">
                       <div>
                         <div className="flex items-center justify-center text-orange-500 mb-1">
                           <MousePointerClick size={16} />
                         </div>
                         <div className="text-2xl font-bold text-gray-900">{filteredMetrics.totalClicks}</div>
                         <div className="text-xs text-gray-500">
-                          Clicks
+                          Page Views
+                          {(fromDate || toDate) && <span className="block text-orange-600">(filtered)</span>}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="flex items-center justify-center text-purple-500 mb-1">
+                          <MousePointerClick size={16} />
+                        </div>
+                        <div className="text-2xl font-bold text-gray-900">{filteredMetrics.totalButtonClicks || 0}</div>
+                        <div className="text-xs text-gray-500">
+                          Button Clicks
                           {(fromDate || toDate) && <span className="block text-orange-600">(filtered)</span>}
                         </div>
                       </div>

@@ -42,6 +42,7 @@ interface CampaignDetails {
   bookings: Booking[];
   stats: {
     totalClicks: number;
+    totalButtonClicks?: number;
     uniqueVisitors: number;
     totalBookings: number;
     conversionRate: string;
@@ -53,9 +54,11 @@ interface Props {
   filteredBookings?: any[];
   filteredMetrics?: {
     totalClicks: number;
+    totalButtonClicks?: number;
     uniqueVisitors: number;
     totalBookings: number;
     bookings: any[];
+    buttonClicks?: any[];
   };
   dateRange?: { fromDate: string; toDate: string };
   onClose: () => void;
@@ -84,6 +87,7 @@ export default function CampaignStatsModal({
         bookings: filteredBookings,
         stats: {
           totalClicks: filteredMetrics.totalClicks,
+          totalButtonClicks: filteredMetrics.totalButtonClicks || 0,
           uniqueVisitors: filteredMetrics.uniqueVisitors,
           totalBookings: filteredMetrics.totalBookings,
           conversionRate:
@@ -193,13 +197,21 @@ export default function CampaignStatsModal({
           ) : details ? (
             <>
               <div className="p-6 bg-gray-50 border-b border-gray-200">
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
                   <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
                     <div className="flex items-center justify-between mb-2">
-                      <span className="text-gray-600 text-sm font-medium">Total Clicks</span>
+                      <span className="text-gray-600 text-sm font-medium">Page Views</span>
                       <MousePointerClick className="text-orange-500" size={20} />
                     </div>
                     <div className="text-3xl font-bold text-gray-900">{details.stats.totalClicks}</div>
+                  </div>
+
+                  <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-gray-600 text-sm font-medium">Button Clicks</span>
+                      <MousePointerClick className="text-purple-500" size={20} />
+                    </div>
+                    <div className="text-3xl font-bold text-gray-900">{details.stats.totalButtonClicks || 0}</div>
                   </div>
 
                   <div className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
