@@ -18,6 +18,7 @@ import {
   ArrowLeft,
   ChevronDown,
   ChevronRight,
+  Edit,
 } from 'lucide-react';
 import {
   format,
@@ -35,6 +36,8 @@ import {
   setCachedUsers,
   clearAllCache,
 } from '../utils/dataCache';
+
+import NotesModal from './NotesModal';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://api.flashfirejobs.com';
 
@@ -54,6 +57,7 @@ interface Booking {
   utmMedium?: string;
   utmCampaign?: string;
   anythingToKnow?: string;
+  meetingNotes?: string;
   reminderCallJobId?: string;
   paymentReminders?: Array<{
     jobId: string;
@@ -89,6 +93,7 @@ interface UnifiedRow {
   status?: BookingStatus;
   meetLink?: string;
   notes?: string;
+  meetingNotes?: string;
   bookingId?: string;
   workAuthorization?: string;
 }
@@ -194,6 +199,8 @@ export default function UnifiedDataView({ onOpenEmailCampaign }: UnifiedDataView
   const [currentPage, setCurrentPage] = useState(1);
   const [hasMoreData, setHasMoreData] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [isNotesModalOpen, setIsNotesModalOpen] = useState(false);
+  const [selectedBookingForNotes, setSelectedBookingForNotes] = useState<{ id: string; name: string; notes: string } | null>(null);
   const ITEMS_PER_PAGE = 50;
 
   // Indexes for fast lookups
@@ -281,9 +288,9 @@ export default function UnifiedDataView({ onOpenEmailCampaign }: UnifiedDataView
       setLoadingUserCampaigns(true);
       const loadingSet = new Set<string>(emails.map(e => e.toLowerCase()));
       setLoadingCampaignsForEmails(loadingSet);
-      
+
       const campaignsMap = new Map<string, UserCampaign[]>();
-      
+
       await Promise.all(
         emails.map(async (email) => {
           try {
@@ -297,7 +304,7 @@ export default function UnifiedDataView({ onOpenEmailCampaign }: UnifiedDataView
           }
         })
       );
-      
+
       setUserCampaigns(campaignsMap);
     } catch (err) {
       console.error('Error fetching user campaigns:', err);
@@ -336,15 +343,15 @@ export default function UnifiedDataView({ onOpenEmailCampaign }: UnifiedDataView
 
   useEffect(() => {
     const allEmails = new Set<string>();
-    
+
     usersWithoutBookings.forEach(u => {
       if (u.email) allEmails.add(u.email.toLowerCase());
     });
-    
+
     bookings.forEach(b => {
       if (b.clientEmail) allEmails.add(b.clientEmail.toLowerCase());
     });
-    
+
     const emailArray = Array.from(allEmails);
     if (emailArray.length > 0) {
       fetchUserCampaigns(emailArray);
@@ -399,6 +406,7 @@ export default function UnifiedDataView({ onOpenEmailCampaign }: UnifiedDataView
         status: booking.bookingStatus,
         meetLink: booking.calendlyMeetLink && booking.calendlyMeetLink !== 'Not Provided' ? booking.calendlyMeetLink : undefined,
         notes: booking.anythingToKnow,
+        meetingNotes: booking.meetingNotes,
         bookingId: booking.bookingId,
       });
     });
@@ -642,6 +650,40 @@ export default function UnifiedDataView({ onOpenEmailCampaign }: UnifiedDataView
     }
   };
 
+  const handleSaveNotes = async (notes: string) => {
+    if (!selectedBookingForNotes) return;
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/campaign-bookings/${selectedBookingForNotes.id}/notes`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ notes }),
+      });
+
+      const data = await response.json();
+      if (!data.success) {
+        throw new Error(data.message || 'Failed to save notes');
+      }
+
+      setBookings((prev) => {
+        const updated = prev.map((booking) =>
+          booking.bookingId === selectedBookingForNotes.id
+            ? { ...booking, meetingNotes: notes }
+            : booking
+        );
+        setCachedBookings(updated);
+        return updated;
+      });
+
+      alert('Notes saved successfully');
+    } catch (err) {
+      console.error(err);
+      alert(err instanceof Error ? err.message : 'Failed to save notes');
+    }
+  };
+
   const handleReschedule = async (booking: Booking) => {
     const defaultValue = booking.scheduledEventStartTime
       ? format(parseISO(booking.scheduledEventStartTime), "yyyy-MM-dd'T'HH:mm")
@@ -802,162 +844,161 @@ export default function UnifiedDataView({ onOpenEmailCampaign }: UnifiedDataView
               <div className="border border-slate-200 rounded-xl overflow-hidden">
                 <div className="overflow-x-auto">
                   <div className="max-h-[400px] overflow-y-auto">
-                  <table className="min-w-full divide-y divide-slate-200 text-sm">
-                    <thead className="bg-purple-50 sticky top-0 z-10">
-                      <tr className="text-left text-slate-600">
-                        <th className="px-4 py-3 font-semibold w-12">
-                          <button
-                            onClick={() => {
-                              const allUserIds = filteredUsersWithoutBookings.map((row) => row.id);
-                              const allSelected = allUserIds.every((id) => selectedRows.has(id));
-                              if (allSelected) {
-                                setSelectedRows((prev) => {
-                                  const next = new Set(prev);
-                                  allUserIds.forEach((id) => next.delete(id));
-                                  return next;
-                                });
-                              } else {
-                                setSelectedRows((prev) => {
-                                  const next = new Set(prev);
-                                  allUserIds.forEach((id) => next.add(id));
-                                  return next;
-                                });
-                              }
-                            }}
-                            className="flex items-center justify-center"
-                            type="button"
-                          >
-                            {filteredUsersWithoutBookings.length > 0 &&
-                            filteredUsersWithoutBookings.every((row) => selectedRows.has(row.id)) ? (
-                              <CheckSquare size={18} className="text-purple-600" />
-                            ) : (
-                              <Square size={18} className="text-slate-400" />
-                            )}
-                          </button>
-                        </th>
-                        <th className="px-4 py-3 font-semibold">Name</th>
-                        <th className="px-4 py-3 font-semibold">Email</th>
-                        <th className="px-4 py-3 font-semibold">Phone</th>
-                        <th className="px-4 py-3 font-semibold">Work Authorization</th>
-                        <th className="px-4 py-3 font-semibold">Signed Up</th>
-                        <th className="px-4 py-3 font-semibold">Campaigns Sent</th>
-                        <th className="px-4 py-3 font-semibold">Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100 bg-white">
-                      {filteredUsersWithoutBookings.map((row) => {
-                        const createdDate = format(parseISO(row.createdAt), 'MMM d, yyyy • h:mm a');
-                        const isSelected = selectedRows.has(row.id);
-                        const userData = usersByEmail.get(row.email.toLowerCase());
-
-                        return (
-                          <tr
-                            key={row.id}
-                            className={`hover:bg-purple-50/50 transition ${isSelected ? 'bg-purple-50' : ''}`}
-                          >
-                            <td className="px-4 py-4">
-                              <button
-                                onClick={() => handleSelectRow(row.id)}
-                                className="flex items-center justify-center"
-                                type="button"
-                              >
-                                {isSelected ? (
-                                  <CheckSquare size={18} className="text-purple-600" />
-                                ) : (
-                                  <Square size={18} className="text-slate-400" />
-                                )}
-                              </button>
-                            </td>
-                            <td className="px-4 py-4">
-                              <div className="font-semibold text-slate-900">{row.name}</div>
-                            </td>
-                            <td className="px-4 py-4">
-                              <div className="text-slate-700">{row.email}</div>
-                            </td>
-                            <td className="px-4 py-4">
-                              {row.phone && row.phone !== 'Not Specified' ? (
-                                <a
-                                  href={`tel:${row.phone}`}
-                                  className="text-xs text-purple-600 font-semibold hover:text-purple-700"
-                                >
-                                  {row.phone}
-                                </a>
+                    <table className="min-w-full divide-y divide-slate-200 text-sm">
+                      <thead className="bg-purple-50 sticky top-0 z-10">
+                        <tr className="text-left text-slate-600">
+                          <th className="px-4 py-3 font-semibold w-12">
+                            <button
+                              onClick={() => {
+                                const allUserIds = filteredUsersWithoutBookings.map((row) => row.id);
+                                const allSelected = allUserIds.every((id) => selectedRows.has(id));
+                                if (allSelected) {
+                                  setSelectedRows((prev) => {
+                                    const next = new Set(prev);
+                                    allUserIds.forEach((id) => next.delete(id));
+                                    return next;
+                                  });
+                                } else {
+                                  setSelectedRows((prev) => {
+                                    const next = new Set(prev);
+                                    allUserIds.forEach((id) => next.add(id));
+                                    return next;
+                                  });
+                                }
+                              }}
+                              className="flex items-center justify-center"
+                              type="button"
+                            >
+                              {filteredUsersWithoutBookings.length > 0 &&
+                                filteredUsersWithoutBookings.every((row) => selectedRows.has(row.id)) ? (
+                                <CheckSquare size={18} className="text-purple-600" />
                               ) : (
-                                <span className="text-slate-400 text-xs">—</span>
+                                <Square size={18} className="text-slate-400" />
                               )}
-                            </td>
-                            <td className="px-4 py-4">
-                              <span
-                                className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold ${
-                                  userData?.workAuthorization?.toLowerCase() === 'yes'
+                            </button>
+                          </th>
+                          <th className="px-4 py-3 font-semibold">Name</th>
+                          <th className="px-4 py-3 font-semibold">Email</th>
+                          <th className="px-4 py-3 font-semibold">Phone</th>
+                          <th className="px-4 py-3 font-semibold">Work Authorization</th>
+                          <th className="px-4 py-3 font-semibold">Signed Up</th>
+                          <th className="px-4 py-3 font-semibold">Campaigns Sent</th>
+                          <th className="px-4 py-3 font-semibold">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 bg-white">
+                        {filteredUsersWithoutBookings.map((row) => {
+                          const createdDate = format(parseISO(row.createdAt), 'MMM d, yyyy • h:mm a');
+                          const isSelected = selectedRows.has(row.id);
+                          const userData = usersByEmail.get(row.email.toLowerCase());
+
+                          return (
+                            <tr
+                              key={row.id}
+                              className={`hover:bg-purple-50/50 transition ${isSelected ? 'bg-purple-50' : ''}`}
+                            >
+                              <td className="px-4 py-4">
+                                <button
+                                  onClick={() => handleSelectRow(row.id)}
+                                  className="flex items-center justify-center"
+                                  type="button"
+                                >
+                                  {isSelected ? (
+                                    <CheckSquare size={18} className="text-purple-600" />
+                                  ) : (
+                                    <Square size={18} className="text-slate-400" />
+                                  )}
+                                </button>
+                              </td>
+                              <td className="px-4 py-4">
+                                <div className="font-semibold text-slate-900">{row.name}</div>
+                              </td>
+                              <td className="px-4 py-4">
+                                <div className="text-slate-700">{row.email}</div>
+                              </td>
+                              <td className="px-4 py-4">
+                                {row.phone && row.phone !== 'Not Specified' ? (
+                                  <a
+                                    href={`tel:${row.phone}`}
+                                    className="text-xs text-purple-600 font-semibold hover:text-purple-700"
+                                  >
+                                    {row.phone}
+                                  </a>
+                                ) : (
+                                  <span className="text-slate-400 text-xs">—</span>
+                                )}
+                              </td>
+                              <td className="px-4 py-4">
+                                <span
+                                  className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold ${userData?.workAuthorization?.toLowerCase() === 'yes'
                                     ? 'bg-green-100 text-green-800'
                                     : 'bg-slate-100 text-slate-600'
-                                }`}
-                              >
-                                {userData?.workAuthorization || 'Not Specified'}
-                              </span>
-                            </td>
-                            <td className="px-4 py-4 text-slate-600">{createdDate}</td>
-                            <td className="px-4 py-4">
-                              {(() => {
-                                const emailLower = row.email.toLowerCase();
-                                const isLoading = loadingCampaignsForEmails.has(emailLower);
-                                const campaigns = userCampaigns.get(emailLower) || [];
-                                
-                                if (isLoading) {
+                                    }`}
+                                >
+                                  {userData?.workAuthorization || 'Not Specified'}
+                                </span>
+                              </td>
+                              <td className="px-4 py-4 text-slate-600">{createdDate}</td>
+                              <td className="px-4 py-4">
+                                {(() => {
+                                  const emailLower = row.email.toLowerCase();
+                                  const isLoading = loadingCampaignsForEmails.has(emailLower);
+                                  const campaigns = userCampaigns.get(emailLower) || [];
+
+                                  if (isLoading) {
+                                    return (
+                                      <div className="flex items-center gap-2 text-slate-500">
+                                        <Loader2 className="animate-spin" size={14} />
+                                        <span className="text-xs">Loading...</span>
+                                      </div>
+                                    );
+                                  }
+
+                                  if (campaigns.length === 0) {
+                                    return <span className="text-slate-400 text-xs">No campaigns</span>;
+                                  }
+
                                   return (
-                                    <div className="flex items-center gap-2 text-slate-500">
-                                      <Loader2 className="animate-spin" size={14} />
-                                      <span className="text-xs">Loading...</span>
+                                    <div className="space-y-1 max-w-xs">
+                                      <button
+                                        onClick={() => handleUserCampaignsClick(row.email)}
+                                        className="flex items-center gap-2 text-xs hover:bg-purple-50 rounded px-2 py-1 transition cursor-pointer w-full text-left border border-purple-200 hover:border-purple-300"
+                                        type="button"
+                                      >
+                                        <Mail className="text-purple-500" size={14} />
+                                        <span className="text-purple-700 font-semibold">
+                                          {campaigns.length} campaign{campaigns.length > 1 ? 's' : ''}
+                                        </span>
+                                        <span className="text-slate-400 ml-auto">
+                                          View all →
+                                        </span>
+                                      </button>
                                     </div>
                                   );
-                                }
-                                
-                                if (campaigns.length === 0) {
-                                  return <span className="text-slate-400 text-xs">No campaigns</span>;
-                                }
-                                
-                                return (
-                                  <div className="space-y-1 max-w-xs">
-                                    <button
-                                      onClick={() => handleUserCampaignsClick(row.email)}
-                                      className="flex items-center gap-2 text-xs hover:bg-purple-50 rounded px-2 py-1 transition cursor-pointer w-full text-left border border-purple-200 hover:border-purple-300"
-                                      type="button"
-                                    >
-                                      <Mail className="text-purple-500" size={14} />
-                                      <span className="text-purple-700 font-semibold">
-                                        {campaigns.length} campaign{campaigns.length > 1 ? 's' : ''}
-                                      </span>
-                                      <span className="text-slate-400 ml-auto">
-                                        View all →
-                                      </span>
-                                    </button>
-                                  </div>
-                                );
-                              })()}
-                            </td>
-                            <td className="px-4 py-4">
-                              <button
-                                onClick={() => {
-                                  onOpenEmailCampaign({
-                                    recipients: [row.email],
-                                    reason: 'user_without_booking',
-                                  });
-                                }}
-                                className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold bg-purple-500 text-white hover:bg-purple-600 transition"
-                              >
-                                <Mail size={14} />
-                                Reach Out
-                              </button>
-                      </td>
-                    </tr>
-                  );
-                })}
-                  </tbody>
-                </table>
+                                })()}
+                              </td>
+                              <td className="px-4 py-4">
+                                <button
+                                  onClick={() => {
+                                    onOpenEmailCampaign({
+                                      recipients: [row.email],
+                                      reason: 'user_without_booking',
+                                    });
+                                  }}
+                                  className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold bg-purple-500 text-white hover:bg-purple-600 transition"
+                                >
+                                  <Mail size={14} />
+                                  Reach Out
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
               </div>
-            </div>
-          </div>
             )}
           </div>
         )}
@@ -1114,11 +1155,10 @@ export default function UnifiedDataView({ onOpenEmailCampaign }: UnifiedDataView
                       </td>
                       <td className="px-4 py-4">
                         <span
-                          className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold ${
-                            isBooking
-                              ? 'bg-blue-100 text-blue-800'
-                              : 'bg-purple-100 text-purple-800'
-                          }`}
+                          className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold ${isBooking
+                            ? 'bg-blue-100 text-blue-800'
+                            : 'bg-purple-100 text-purple-800'
+                            }`}
                         >
                           {isBooking ? 'Booking' : 'User'}
                         </span>
@@ -1171,7 +1211,7 @@ export default function UnifiedDataView({ onOpenEmailCampaign }: UnifiedDataView
                           const isLoading = loadingCampaignsForEmails.has(emailLower);
                           const campaigns = userCampaigns.get(emailLower) || [];
                           const booking = isBooking && row.bookingId ? bookingsById.get(row.bookingId) : null;
-                          
+
                           return (
                             <div className="space-y-2 max-w-xs">
                               {/* Email Campaigns */}
@@ -1197,7 +1237,7 @@ export default function UnifiedDataView({ onOpenEmailCampaign }: UnifiedDataView
                               ) : (
                                 <span className="text-slate-400 text-xs">No campaigns</span>
                               )}
-                              
+
                               {/* Scheduled Information */}
                               {booking && (
                                 <div className="space-y-1 pt-1 border-t border-slate-200">
@@ -1308,6 +1348,20 @@ export default function UnifiedDataView({ onOpenEmailCampaign }: UnifiedDataView
                                 )}
                                 Reschedule
                               </button>
+                              <button
+                                onClick={() => {
+                                  setSelectedBookingForNotes({
+                                    id: row.bookingId!,
+                                    name: row.name,
+                                    notes: row.meetingNotes || '',
+                                  });
+                                  setIsNotesModalOpen(true);
+                                }}
+                                className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold bg-white border border-slate-300 text-slate-600 hover:bg-slate-50 transition"
+                              >
+                                <Edit size={14} />
+                                {row.meetingNotes ? 'Edit Notes' : 'Take Notes'}
+                              </button>
                             </div>
                           )
                         ) : (
@@ -1326,7 +1380,12 @@ export default function UnifiedDataView({ onOpenEmailCampaign }: UnifiedDataView
                         )}
                         {row.notes && (
                           <div className="text-xs text-slate-500 bg-slate-100 rounded-lg px-3 py-2 border border-slate-200 mt-2">
-                            <span className="font-semibold text-slate-600">Notes:</span> {row.notes}
+                            <span className="font-semibold text-slate-600">Calendly Notes:</span> {row.notes}
+                          </div>
+                        )}
+                        {row.meetingNotes && (
+                          <div className="text-xs text-slate-500 bg-yellow-50 rounded-lg px-3 py-2 border border-yellow-200 mt-2">
+                            <span className="font-semibold text-slate-600">Meeting Notes:</span> {row.meetingNotes}
                           </div>
                         )}
                       </td>
@@ -1413,11 +1472,10 @@ export default function UnifiedDataView({ onOpenEmailCampaign }: UnifiedDataView
                         <tr key={campaign._id} className="hover:bg-slate-50 transition">
                           <td className="px-4 py-4">
                             <span
-                              className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold ${
-                                campaign.provider === 'mailchimp'
-                                  ? 'bg-purple-100 text-purple-800'
-                                  : 'bg-blue-100 text-blue-800'
-                              }`}
+                              className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold ${campaign.provider === 'mailchimp'
+                                ? 'bg-purple-100 text-purple-800'
+                                : 'bg-blue-100 text-blue-800'
+                                }`}
                             >
                               {campaign.provider === 'mailchimp' ? 'Mailchimp' : 'SendGrid'}
                             </span>
@@ -1427,11 +1485,10 @@ export default function UnifiedDataView({ onOpenEmailCampaign }: UnifiedDataView
                           </td>
                           <td className="px-4 py-4">
                             <span
-                              className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold ${
-                                campaign.status === 'SUCCESS' || campaign.status === 'success'
-                                  ? 'bg-green-100 text-green-800'
-                                  : 'bg-red-100 text-red-800'
-                              }`}
+                              className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold ${campaign.status === 'SUCCESS' || campaign.status === 'success'
+                                ? 'bg-green-100 text-green-800'
+                                : 'bg-red-100 text-red-800'
+                                }`}
                             >
                               {campaign.status === 'SUCCESS' || campaign.status === 'success' ? 'SUCCESS' : 'FAILED'}
                             </span>
@@ -1527,13 +1584,12 @@ export default function UnifiedDataView({ onOpenEmailCampaign }: UnifiedDataView
                       <div>
                         <p className="text-xs text-slate-500 mb-1">Status</p>
                         <span
-                          className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold ${
-                            campaignDetails.campaign.status === 'SUCCESS'
-                              ? 'bg-green-100 text-green-800'
-                              : campaignDetails.campaign.status === 'PARTIAL'
+                          className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold ${campaignDetails.campaign.status === 'SUCCESS'
+                            ? 'bg-green-100 text-green-800'
+                            : campaignDetails.campaign.status === 'PARTIAL'
                               ? 'bg-amber-100 text-amber-800'
                               : 'bg-red-100 text-red-800'
-                          }`}
+                            }`}
                         >
                           {campaignDetails.campaign.status}
                         </span>
@@ -1565,11 +1621,10 @@ export default function UnifiedDataView({ onOpenEmailCampaign }: UnifiedDataView
                             <td className="px-4 py-3 text-slate-600 font-medium">Send Status</td>
                             <td className="px-4 py-3">
                               <span
-                                className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold ${
-                                  campaignDetails.userEmailDetails.status === 'SUCCESS'
-                                    ? 'bg-green-100 text-green-800'
-                                    : 'bg-red-100 text-red-800'
-                                }`}
+                                className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold ${campaignDetails.userEmailDetails.status === 'SUCCESS'
+                                  ? 'bg-green-100 text-green-800'
+                                  : 'bg-red-100 text-red-800'
+                                  }`}
                               >
                                 {campaignDetails.userEmailDetails.status}
                               </span>
@@ -1636,11 +1691,10 @@ export default function UnifiedDataView({ onOpenEmailCampaign }: UnifiedDataView
 
                   {/* Booking Status */}
                   <div
-                    className={`rounded-xl border p-6 ${
-                      campaignDetails.bookedAfterEmail
-                        ? 'bg-green-50 border-green-200'
-                        : 'bg-slate-50 border-slate-200'
-                    }`}
+                    className={`rounded-xl border p-6 ${campaignDetails.bookedAfterEmail
+                      ? 'bg-green-50 border-green-200'
+                      : 'bg-slate-50 border-slate-200'
+                      }`}
                   >
                     <h4 className="text-lg font-semibold text-slate-900 mb-4 flex items-center gap-2">
                       {campaignDetails.bookedAfterEmail ? (
@@ -1727,6 +1781,17 @@ export default function UnifiedDataView({ onOpenEmailCampaign }: UnifiedDataView
           </div>
         </div>
       )}
+      {/* Notes Modal */}
+      <NotesModal
+        isOpen={isNotesModalOpen}
+        onClose={() => {
+          setIsNotesModalOpen(false);
+          setSelectedBookingForNotes(null);
+        }}
+        onSave={handleSaveNotes}
+        initialNotes={selectedBookingForNotes?.notes}
+        clientName={selectedBookingForNotes?.name || ''}
+      />
     </div>
   );
 }
