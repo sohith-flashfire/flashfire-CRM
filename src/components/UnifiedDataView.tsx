@@ -464,6 +464,19 @@ export default function UnifiedDataView({ onOpenEmailCampaign }: UnifiedDataView
             row.source?.toLowerCase().includes(term)
           );
         }
+        // Filter out "Unknown Client" with placeholder email
+        if (row.name === 'Unknown Client' && row.email.includes('calendly.placeholder')) {
+          return false;
+        }
+
+        // Filter out invalid dates (e.g. 1970-01-01)
+        if (row.scheduledTime) {
+          const date = parseISO(row.scheduledTime);
+          if (date.getFullYear() === 1970) {
+            return false;
+          }
+        }
+
         return true;
       })
       .sort((a, b) => {

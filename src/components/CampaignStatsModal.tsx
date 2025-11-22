@@ -260,72 +260,87 @@ export default function CampaignStatsModal({
                   </div>
                 ) : (
                   <div className="space-y-4">
-                    {(filteredBookings || details.bookings).map((booking: Booking) => (
-                      <div
-                        key={booking.bookingId}
-                        className="bg-white border border-gray-200 rounded-lg p-5 hover:shadow-md transition-shadow"
-                      >
-                        <div className="flex items-start justify-between mb-3">
-                          <div className="flex-1">
-                            <div className="flex items-center gap-3 mb-2">
-                              <h4 className="text-lg font-semibold text-gray-900 flex items-center">
-                                <User className="mr-2 text-gray-400" size={18} />
-                                {booking.clientName}
-                              </h4>
-                              <span className={`px-3 py-1 rounded-full text-xs font-semibold ${getStatusColor(booking.bookingStatus)}`}>
-                                {booking.bookingStatus}
-                              </span>
-                            </div>
-                            <div className="space-y-1 text-sm text-gray-600">
-                              <div className="flex items-center">
-                                <Mail className="mr-2 text-gray-400" size={16} />
-                                <a href={`mailto:${booking.clientEmail}`} className="hover:text-orange-500 transition-colors">
-                                  {booking.clientEmail}
-                                </a>
+                    {(filteredBookings || details.bookings)
+                      .filter((booking) => {
+                        // Filter out "Unknown Client" with placeholder email
+                        if (booking.clientName === 'Unknown Client' && booking.clientEmail.includes('calendly.placeholder')) {
+                          return false;
+                        }
+                        // Filter out invalid dates (e.g. 1970-01-01)
+                        if (booking.scheduledEventStartTime) {
+                          const date = new Date(booking.scheduledEventStartTime);
+                          if (date.getFullYear() === 1970) {
+                            return false;
+                          }
+                        }
+                        return true;
+                      })
+                      .map((booking: Booking) => (
+                        <div
+                          key={booking.bookingId}
+                          className="bg-white border border-gray-200 rounded-lg p-5 hover:shadow-md transition-shadow"
+                        >
+                          <div className="flex items-start justify-between mb-3">
+                            <div className="flex-1">
+                              <div className="flex items-center gap-3 mb-2">
+                                <h4 className="text-lg font-semibold text-gray-900 flex items-center">
+                                  <User className="mr-2 text-gray-400" size={18} />
+                                  {booking.clientName}
+                                </h4>
+                                <span className={`px-3 py-1 rounded-full text-xs font-semibold ${getStatusColor(booking.bookingStatus)}`}>
+                                  {booking.bookingStatus}
+                                </span>
                               </div>
-                              {booking.clientPhone && (
+                              <div className="space-y-1 text-sm text-gray-600">
                                 <div className="flex items-center">
-                                  <Phone className="mr-2 text-gray-400" size={16} />
-                                  <a href={`tel:${booking.clientPhone}`} className="hover:text-orange-500 transition-colors">
-                                    {booking.clientPhone}
+                                  <Mail className="mr-2 text-gray-400" size={16} />
+                                  <a href={`mailto:${booking.clientEmail}`} className="hover:text-orange-500 transition-colors">
+                                    {booking.clientEmail}
                                   </a>
                                 </div>
-                              )}
+                                {booking.clientPhone && (
+                                  <div className="flex items-center">
+                                    <Phone className="mr-2 text-gray-400" size={16} />
+                                    <a href={`tel:${booking.clientPhone}`} className="hover:text-orange-500 transition-colors">
+                                      {booking.clientPhone}
+                                    </a>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+
+                            {booking.calendlyMeetLink && booking.calendlyMeetLink !== 'Not Provided' && (
+                              <a
+                                href={booking.calendlyMeetLink}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="ml-4 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors flex items-center gap-2 text-sm font-semibold"
+                              >
+                                <ExternalLink size={16} />
+                                Join Meeting
+                              </a>
+                            )}
+                          </div>
+
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+                            <div className="bg-gray-50 p-3 rounded-lg">
+                              <div className="text-gray-500 text-xs font-medium mb-1">Meeting Scheduled</div>
+                              <div className="text-gray-900 font-semibold">{formatDate(booking.scheduledEventStartTime)}</div>
+                            </div>
+                            <div className="bg-gray-50 p-3 rounded-lg">
+                              <div className="text-gray-500 text-xs font-medium mb-1">Booked On</div>
+                              <div className="text-gray-900 font-semibold">{formatDate(booking.bookingCreatedAt)}</div>
                             </div>
                           </div>
 
-                          {booking.calendlyMeetLink && booking.calendlyMeetLink !== 'Not Provided' && (
-                            <a
-                              href={booking.calendlyMeetLink}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="ml-4 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors flex items-center gap-2 text-sm font-semibold"
-                            >
-                              <ExternalLink size={16} />
-                              Join Meeting
-                            </a>
+                          {booking.anythingToKnow && (
+                            <div className="mt-3 p-3 bg-blue-50 rounded-lg border border-blue-100">
+                              <div className="text-blue-700 text-xs font-medium mb-1">Additional Notes:</div>
+                              <div className="text-blue-900 text-sm">{booking.anythingToKnow}</div>
+                            </div>
                           )}
                         </div>
-
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
-                          <div className="bg-gray-50 p-3 rounded-lg">
-                            <div className="text-gray-500 text-xs font-medium mb-1">Meeting Scheduled</div>
-                            <div className="text-gray-900 font-semibold">{formatDate(booking.scheduledEventStartTime)}</div>
-                          </div>
-                          <div className="bg-gray-50 p-3 rounded-lg">
-                            <div className="text-gray-500 text-xs font-medium mb-1">Booked On</div>
-                            <div className="text-gray-900 font-semibold">{formatDate(booking.bookingCreatedAt)}</div>
-                          </div>
-                        </div>
-
-                        {booking.anythingToKnow && (
-                          <div className="mt-3 p-3 bg-blue-50 rounded-lg border border-blue-100">
-                            <div className="text-blue-700 text-xs font-medium mb-1">Additional Notes:</div>
-                            <div className="text-blue-900 text-sm">{booking.anythingToKnow}</div>
-                          </div>
-                        )}
-                      </div>
-                    ))}
+                      ))}
                   </div>
                 )}
               </div>
@@ -351,9 +366,8 @@ export default function CampaignStatsModal({
               <button
                 onClick={handleDeleteCampaign}
                 disabled={isDeleting}
-                className={`flex-1 py-3 px-6 rounded-lg transition-colors font-semibold flex items-center justify-center gap-2 ${
-                  showDeleteConfirm ? 'bg-red-600 text-white hover:bg-red-700' : 'bg-red-500 text-white hover:bg-red-600'
-                } ${isDeleting ? 'opacity-50 cursor-not-allowed' : ''}`}
+                className={`flex-1 py-3 px-6 rounded-lg transition-colors font-semibold flex items-center justify-center gap-2 ${showDeleteConfirm ? 'bg-red-600 text-white hover:bg-red-700' : 'bg-red-500 text-white hover:bg-red-600'
+                  } ${isDeleting ? 'opacity-50 cursor-not-allowed' : ''}`}
               >
                 <Trash2 size={18} />
                 {isDeleting ? 'Deleting...' : showDeleteConfirm ? 'Confirm Delete?' : 'Delete Campaign'}
