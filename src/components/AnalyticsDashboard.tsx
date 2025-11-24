@@ -12,7 +12,9 @@ import {
   ArrowUpRight,
   ArrowDownRight,
   ExternalLink,
+  Edit,
 } from 'lucide-react';
+import NotesModal from './NotesModal';
 import {
   Area,
   AreaChart,
@@ -60,6 +62,7 @@ interface Booking {
   utmMedium?: string;
   utmCampaign?: string;
   anythingToKnow?: string;
+  meetingNotes?: string;
 }
 
 interface CampaignStats {
@@ -111,6 +114,8 @@ export default function AnalyticsDashboard({ onOpenEmailCampaign }: AnalyticsDas
   const [utmFilter, setUtmFilter] = useState<string>('all');
   const [updatingBookingId, setUpdatingBookingId] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [isNotesModalOpen, setIsNotesModalOpen] = useState(false);
+  const [selectedBookingForNotes, setSelectedBookingForNotes] = useState<{ id: string; name: string; notes: string } | null>(null);
 
   // Index for fast lookups
   const bookingsById = useMemo(() => {
@@ -427,20 +432,49 @@ export default function AnalyticsDashboard({ onOpenEmailCampaign }: AnalyticsDas
         setCachedBookings(updated);
         return updated;
       });
-      if (status === 'no-show') {
-        const affected = bookingsById.get(bookingId);
-        if (affected?.clientEmail) {
-          onOpenEmailCampaign({
-            recipients: [affected.clientEmail],
-            reason: 'no_show_followup',
-          });
-        }
-      }
+      // Removed automatic email opening when marking as no-show
     } catch (err) {
       console.error(err);
       alert(err instanceof Error ? err.message : 'Failed to update booking status');
     } finally {
       setUpdatingBookingId(null);
+    }
+  };
+
+  const handleSaveNotes = async (notes: string) => {
+    if (!selectedBookingForNotes) return;
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/campaign-bookings/${selectedBookingForNotes.id}/notes`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ notes }),
+      });
+
+      const data = await response.json();
+      if (!data.success) {
+        throw new Error(data.message || 'Failed to save notes');
+      }
+
+      setBookings((prev) => {
+        const updated = prev.map((booking) =>
+          booking.bookingId === selectedBookingForNotes.id
+            ? { ...booking, meetingNotes: notes }
+            : booking
+        );
+        setCachedBookings(updated);
+        return updated;
+      });
+
+      alert('Notes saved successfully');
+      setIsNotesModalOpen(false);
+      setSelectedBookingForNotes(null);
+    } catch (err) {
+      console.error(err);
+      alert(err instanceof Error ? err.message : 'Failed to save notes');
+      throw err;
     }
   };
 
@@ -988,23 +1022,49 @@ export default function AnalyticsDashboard({ onOpenEmailCampaign }: AnalyticsDas
                               )}
                               Completed
                             </button>
-                            <button
-                              onClick={() =>
-                                handleStatusUpdate(
-                                  booking.bookingId,
-                                  booking.bookingStatus === 'no-show' ? 'scheduled' : 'no-show',
-                                )
-                              }
-                              disabled={updatingBookingId === booking.bookingId}
-                              className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold bg-white border border-rose-300 text-rose-600 hover:bg-rose-50 transition disabled:opacity-60"
-                            >
-                              {updatingBookingId === booking.bookingId ? (
-                                <Loader2 className="animate-spin" size={14} />
-                              ) : (
-                                <AlertTriangle size={14} />
-                              )}
-                              {booking.bookingStatus === 'no-show' ? 'Clear No-Show' : 'Mark No-Show'}
-                            </button>
+                            {booking.bookingStatus === 'no-show' ? (
+                              <>
+                                <button
+                                  onClick={() => handleStatusUpdate(booking.bookingId, 'scheduled')}
+                                  disabled={updatingBookingId === booking.bookingId}
+                                  className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold bg-white border border-gray-300 text-gray-600 hover:bg-gray-50 transition disabled:opacity-60"
+                                >
+                                  {updatingBookingId === booking.bookingId ? (
+                                    <Loader2 className="animate-spin" size={14} />
+                                  ) : (
+                                    <CheckCircle2 size={14} />
+                                  )}
+                                  Unmark
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    if (booking.clientEmail) {
+                                      onOpenEmailCampaign({
+                                        recipients: [booking.clientEmail],
+                                        reason: 'no_show_followup',
+                                      });
+                                    }
+                                  }}
+                                  className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold bg-white border border-blue-300 text-blue-600 hover:bg-blue-50 transition"
+                                >
+                                  <Mail size={14} />
+                                  Send Mail
+                                </button>
+                              </>
+                            ) : (
+                              <button
+                                onClick={() => handleStatusUpdate(booking.bookingId, 'no-show')}
+                                disabled={updatingBookingId === booking.bookingId}
+                                className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold bg-white border border-rose-300 text-rose-600 hover:bg-rose-50 transition disabled:opacity-60"
+                              >
+                                {updatingBookingId === booking.bookingId ? (
+                                  <Loader2 className="animate-spin" size={14} />
+                                ) : (
+                                  <AlertTriangle size={14} />
+                                )}
+                                Mark No-Show
+                              </button>
+                            )}
                             <button
                               onClick={() => handleReschedule(booking)}
                               disabled={updatingBookingId === booking.bookingId}
@@ -1016,6 +1076,20 @@ export default function AnalyticsDashboard({ onOpenEmailCampaign }: AnalyticsDas
                                 <Clock size={14} />
                               )}
                               Reschedule
+                            </button>
+                            <button
+                              onClick={() => {
+                                setSelectedBookingForNotes({
+                                  id: booking.bookingId,
+                                  name: booking.clientName,
+                                  notes: booking.meetingNotes || '',
+                                });
+                                setIsNotesModalOpen(true);
+                              }}
+                              className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold bg-white border border-slate-300 text-slate-600 hover:bg-slate-50 transition"
+                            >
+                              <Edit size={14} />
+                              {booking.meetingNotes ? 'Edit Notes' : 'Take Notes'}
                             </button>
                           </div>
                           {booking.anythingToKnow && (
@@ -1046,6 +1120,19 @@ export default function AnalyticsDashboard({ onOpenEmailCampaign }: AnalyticsDas
           </div>
         )}
       </div>
+
+      {isNotesModalOpen && selectedBookingForNotes && (
+        <NotesModal
+          isOpen={isNotesModalOpen}
+          onClose={() => {
+            setIsNotesModalOpen(false);
+            setSelectedBookingForNotes(null);
+          }}
+          onSave={handleSaveNotes}
+          initialNotes={selectedBookingForNotes.notes}
+          clientName={selectedBookingForNotes.name}
+        />
+      )}
     </div>
   );
 }

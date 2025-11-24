@@ -646,15 +646,7 @@ export default function UnifiedDataView({ onOpenEmailCampaign }: UnifiedDataView
         setCachedBookings(updated);
         return updated;
       });
-      if (status === 'no-show') {
-        const affected = bookingsById.get(bookingId);
-        if (affected?.clientEmail) {
-          onOpenEmailCampaign({
-            recipients: [affected.clientEmail],
-            reason: 'no_show_followup',
-          });
-        }
-      }
+      // Removed automatic email opening when marking as no-show
     } catch (err) {
       console.error(err);
       alert(err instanceof Error ? err.message : 'Failed to update booking status');
@@ -1324,26 +1316,60 @@ export default function UnifiedDataView({ onOpenEmailCampaign }: UnifiedDataView
                                 )}
                                 Completed
                               </button>
-                              <button
-                                onClick={() => {
-                                  const booking = bookingsById.get(row.bookingId!);
-                                  if (booking) {
-                                    handleStatusUpdate(
-                                      booking.bookingId,
-                                      booking.bookingStatus === 'no-show' ? 'scheduled' : 'no-show',
-                                    );
-                                  }
-                                }}
-                                disabled={updatingBookingId === row.bookingId}
-                                className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold bg-white border border-rose-300 text-rose-600 hover:bg-rose-50 transition disabled:opacity-60"
-                              >
-                                {updatingBookingId === row.bookingId ? (
-                                  <Loader2 className="animate-spin" size={14} />
-                                ) : (
-                                  <AlertTriangle size={14} />
-                                )}
-                                {row.status === 'no-show' ? 'Clear No-Show' : 'Mark No-Show'}
-                              </button>
+                              {row.status === 'no-show' ? (
+                                <>
+                                  <button
+                                    onClick={() => {
+                                      const booking = bookingsById.get(row.bookingId!);
+                                      if (booking) {
+                                        handleStatusUpdate(booking.bookingId, 'scheduled');
+                                      }
+                                    }}
+                                    disabled={updatingBookingId === row.bookingId}
+                                    className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold bg-white border border-gray-300 text-gray-600 hover:bg-gray-50 transition disabled:opacity-60"
+                                  >
+                                    {updatingBookingId === row.bookingId ? (
+                                      <Loader2 className="animate-spin" size={14} />
+                                    ) : (
+                                      <CheckCircle2 size={14} />
+                                    )}
+                                    Unmark
+                                  </button>
+                                  <button
+                                    onClick={() => {
+                                      const booking = bookingsById.get(row.bookingId!);
+                                      if (booking && booking.clientEmail) {
+                                        onOpenEmailCampaign({
+                                          recipients: [booking.clientEmail],
+                                          reason: 'no_show_followup',
+                                        });
+                                      }
+                                    }}
+                                    className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold bg-white border border-blue-300 text-blue-600 hover:bg-blue-50 transition"
+                                  >
+                                    <Mail size={14} />
+                                    Send Mail
+                                  </button>
+                                </>
+                              ) : (
+                                <button
+                                  onClick={() => {
+                                    const booking = bookingsById.get(row.bookingId!);
+                                    if (booking) {
+                                      handleStatusUpdate(booking.bookingId, 'no-show');
+                                    }
+                                  }}
+                                  disabled={updatingBookingId === row.bookingId}
+                                  className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold bg-white border border-rose-300 text-rose-600 hover:bg-rose-50 transition disabled:opacity-60"
+                                >
+                                  {updatingBookingId === row.bookingId ? (
+                                    <Loader2 className="animate-spin" size={14} />
+                                  ) : (
+                                    <AlertTriangle size={14} />
+                                  )}
+                                  Mark No-Show
+                                </button>
+                              )}
                               <button
                                 onClick={() => {
                                   const booking = bookingsById.get(row.bookingId!);

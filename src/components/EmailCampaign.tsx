@@ -101,10 +101,14 @@ export default function EmailCampaign({ prefill, onPrefillConsumed }: EmailCampa
       if (prefill.templateId) {
         setTemplateId(prefill.templateId);
       }
+      // Set default template name for no-show followup
+      if (prefill.reason === 'no_show_followup') {
+        setTemplateName('Mark as No Show');
+      }
       setSuccess(
         `Loaded ${prefill.recipients.length} recipient${prefill.recipients.length > 1 ? 's' : ''}${
           prefill.reason ? ` from ${prefill.reason.replace(/_/g, ' ')}` : ''
-        }. Choose a template and create scheduled campaign.`
+        }. ${prefill.reason === 'no_show_followup' ? 'This will send immediately (not scheduled).' : 'Choose a template and create scheduled campaign.'}`
       );
       setError('');
       onPrefillConsumed?.();
@@ -200,36 +204,75 @@ export default function EmailCampaign({ prefill, onPrefillConsumed }: EmailCampa
       return;
     }
 
+    // Check if this is a "Mark as No Show" template - send immediately instead of scheduling
+    const isNoShowTemplate = templateName.toLowerCase().includes('mark as no show') || 
+                            templateName.toLowerCase().includes('no show') ||
+                            prefill?.reason === 'no_show_followup';
+
     try {
-      const response = await fetch(`${API_BASE_URL}/api/email-campaign/scheduled`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          templateName: templateName || 'Lead Not Booked Call Follow up 1',
-          domainName,
-          templateId,
-          emailIds: emailArray,
-        }),
-      });
+      let response;
+      let data;
 
-      const data = await response.json();
+      if (isNoShowTemplate) {
+        // Send immediately using SendEmailCampaign endpoint
+        response = await fetch(`${API_BASE_URL}/api/email-campaign/send`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            templateName: templateName || 'Mark as No Show',
+            domainName,
+            templateId,
+            emailIds: emailArray,
+          }),
+        });
 
-      if (data.success) {
-        setSuccess(`Scheduled campaign created successfully! ${data.data.totalRecipients} recipients will receive emails on ${data.data.sendSchedule.length} scheduled dates (Day 0, 4, 7, 14, 28 at 7:30 PM).`);
-        setDomainName('');
-        setTemplateId('');
-        setTemplateName('');
-        setEmailIds('');
-        fetchScheduledCampaigns();
-        setActiveTab('scheduled');
+        data = await response.json();
+
+        if (data.success) {
+          setSuccess(`Emails sent immediately! ${data.data.totalSent} email(s) sent successfully, ${data.data.totalFailed} failed.`);
+          setDomainName('');
+          setTemplateId('');
+          setTemplateName('');
+          setEmailIds('');
+          fetchCampaigns(1);
+          setActiveTab('history');
+        } else {
+          setError(data.message || 'Failed to send emails');
+        }
       } else {
-        setError(data.message || 'Failed to create scheduled campaign');
+        // Create scheduled campaign as usual
+        response = await fetch(`${API_BASE_URL}/api/email-campaign/scheduled`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            templateName: templateName || 'Lead Not Booked Call Follow up 1',
+            domainName,
+            templateId,
+            emailIds: emailArray,
+          }),
+        });
+
+        data = await response.json();
+
+        if (data.success) {
+          setSuccess(`Scheduled campaign created successfully! ${data.data.totalRecipients} recipients will receive emails on ${data.data.sendSchedule.length} scheduled dates (Day 0, 4, 7, 14, 28 at 7:30 PM).`);
+          setDomainName('');
+          setTemplateId('');
+          setTemplateName('');
+          setEmailIds('');
+          fetchScheduledCampaigns();
+          setActiveTab('scheduled');
+        } else {
+          setError(data.message || 'Failed to create scheduled campaign');
+        }
       }
     } catch (err) {
-      console.error('Error creating scheduled campaign:', err);
-      setError('Failed to create scheduled campaign. Please try again.');
+      console.error('Error creating/sending campaign:', err);
+      setError(`Failed to ${isNoShowTemplate ? 'send' : 'create scheduled'} campaign. Please try again.`);
     } finally {
       setLoading(false);
     }
@@ -476,17 +519,28 @@ export default function EmailCampaign({ prefill, onPrefillConsumed }: EmailCampa
                 <p className="text-xs text-gray-500 mt-1">Separate multiple email addresses with commas</p>
               </div>
 
-              <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-                <p className="text-sm text-blue-800 font-medium mb-2">Scheduled Send Times:</p>
-                <ul className="text-sm text-blue-700 space-y-1">
-                  <li>• Day 0: Immediately (7:30 PM)</li>
-                  <li>• Day 4: 4 days later (7:30 PM)</li>
-                  <li>• Day 7: 7 days later (7:30 PM)</li>
-                  <li>• Day 14: 14 days later (7:30 PM)</li>
-                  <li>• Day 28: 28 days later (7:30 PM)</li>
-                </ul>
-                <p className="text-xs text-blue-600 mt-2">Emails will automatically skip recipients who have booked in between sends.</p>
-              </div>
+              {(templateName.toLowerCase().includes('mark as no show') || 
+                templateName.toLowerCase().includes('no show') ||
+                prefill?.reason === 'no_show_followup') ? (
+                <div className="bg-orange-50 border border-orange-200 rounded-lg p-4">
+                  <p className="text-sm text-orange-800 font-medium mb-2">⚠️ Immediate Send Mode:</p>
+                  <p className="text-sm text-orange-700">
+                    This template will be sent <strong>immediately</strong> to all recipients. No scheduling will occur.
+                  </p>
+                </div>
+              ) : (
+                <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                  <p className="text-sm text-blue-800 font-medium mb-2">Scheduled Send Times:</p>
+                  <ul className="text-sm text-blue-700 space-y-1">
+                    <li>• Day 0: Immediately (7:30 PM)</li>
+                    <li>• Day 4: 4 days later (7:30 PM)</li>
+                    <li>• Day 7: 7 days later (7:30 PM)</li>
+                    <li>• Day 14: 14 days later (7:30 PM)</li>
+                    <li>• Day 28: 28 days later (7:30 PM)</li>
+                  </ul>
+                  <p className="text-xs text-blue-600 mt-2">Emails will automatically skip recipients who have booked in between sends.</p>
+                </div>
+              )}
 
               <button
                 type="button"
@@ -532,12 +586,20 @@ export default function EmailCampaign({ prefill, onPrefillConsumed }: EmailCampa
                 {loading ? (
                   <>
                     <Loader className="animate-spin" size={20} />
-                    Creating Scheduled Campaign...
+                    {(templateName.toLowerCase().includes('mark as no show') || 
+                      templateName.toLowerCase().includes('no show') ||
+                      prefill?.reason === 'no_show_followup') 
+                      ? 'Sending Emails...' 
+                      : 'Creating Scheduled Campaign...'}
                   </>
                 ) : (
                   <>
                     <Send size={20} />
-                    Create Scheduled Campaign
+                    {(templateName.toLowerCase().includes('mark as no show') || 
+                      templateName.toLowerCase().includes('no show') ||
+                      prefill?.reason === 'no_show_followup') 
+                      ? 'Send Email Immediately' 
+                      : 'Create Scheduled Campaign'}
                   </>
                 )}
               </button>
