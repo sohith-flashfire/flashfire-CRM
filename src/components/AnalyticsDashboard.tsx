@@ -117,15 +117,6 @@ export default function AnalyticsDashboard({ onOpenEmailCampaign }: AnalyticsDas
   const [isNotesModalOpen, setIsNotesModalOpen] = useState(false);
   const [selectedBookingForNotes, setSelectedBookingForNotes] = useState<{ id: string; name: string; notes: string } | null>(null);
 
-  // Index for fast lookups
-  const bookingsById = useMemo(() => {
-    const map = new Map<string, Booking>();
-    bookings.forEach((booking) => {
-      map.set(booking.bookingId, booking);
-    });
-    return map;
-  }, [bookings]);
-
   const fetchBookings = useCallback(async (forceRefresh = false) => {
     try {
       setRefreshing(true);

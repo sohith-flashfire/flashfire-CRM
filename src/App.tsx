@@ -4,7 +4,7 @@ import ProtectedCampaignManager from './components/ProtectedCampaignManager';
 import ProtectedEmailCampaign from './components/ProtectedEmailCampaign';
 import AnalyticsDashboard from './components/AnalyticsDashboard';
 import UnifiedDataView from './components/UnifiedDataView';
-import { LayoutDashboard, Mail, MessageCircle, BarChart3, Megaphone, BarChart4, Database } from 'lucide-react';
+import { LayoutDashboard, Mail, MessageCircle, BarChart3, Megaphone, BarChart4, Database, Menu, ChevronLeft, ChevronRight } from 'lucide-react';
 import type { EmailPrefillPayload } from './types/emailPrefill';
 
 type Tab = 'campaigns' | 'emails' | 'analytics' | 'data';
@@ -20,6 +20,7 @@ const navItems: Array<{ icon: ComponentType<{ size?: number }>; label: string; t
 function App() {
   const [activeTab, setActiveTab] = useState<Tab>('campaigns');
   const [emailPrefill, setEmailPrefill] = useState<EmailPrefillPayload | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
 
   const handleOpenEmailCampaign = (payload: EmailPrefillPayload) => {
     setEmailPrefill(payload);
@@ -27,13 +28,40 @@ function App() {
   };
 
   return (
-    <div className="min-h-screen flex bg-slate-100">
-      <aside className="hidden md:flex md:w-64 lg:w-72 bg-slate-900 text-white flex-col">
-        <div className="px-6 py-8 border-b border-white/10">
-          <h1 className="text-2xl font-bold">Email Dashboard</h1>
-          <p className="text-sm text-slate-200 mt-1">Marketing Automation</p>
+    <div className="h-screen flex bg-slate-100 overflow-hidden">
+      {/* Overlay for mobile */}
+      {sidebarOpen && (
+        <div
+          className="fixed inset-0 bg-black/50 z-40 md:hidden"
+          onClick={() => setSidebarOpen(false)}
+        />
+      )}
+      
+      {/* Sidebar */}
+      <aside
+        className={`fixed md:relative z-50 bg-slate-900 text-white flex-col transition-all duration-300 ease-in-out ${
+          sidebarOpen 
+            ? 'translate-x-0 w-64 lg:w-72' 
+            : '-translate-x-full md:translate-x-0 md:w-12'
+        } h-screen flex`}
+      >
+        <div className="px-6 py-8 border-b border-white/10 md:px-3 md:py-4">
+          <div className="flex items-center justify-between mb-4 md:justify-center">
+            <div className={`flex-1 transition-opacity duration-300 ${sidebarOpen ? 'opacity-100' : 'opacity-0 md:hidden'}`}>
+              <h1 className="text-2xl font-bold">Email Dashboard</h1>
+              <p className="text-sm text-slate-200 mt-1">Marketing Automation</p>
+            </div>
+            <button
+              onClick={() => setSidebarOpen(!sidebarOpen)}
+              className="text-slate-300 hover:text-white p-2 rounded-lg hover:bg-white/10 transition-colors flex-shrink-0"
+              aria-label="Toggle sidebar"
+              title={sidebarOpen ? "Collapse sidebar" : "Expand sidebar"}
+            >
+              {sidebarOpen ? <ChevronLeft size={20} /> : <ChevronRight size={20} />}
+            </button>
+          </div>
         </div>
-        <nav className="flex-1 px-4 py-6 space-y-1">
+        <nav className={`flex-1 px-4 py-6 space-y-1 overflow-y-auto ${sidebarOpen ? '' : 'md:hidden'}`}>
           {navItems.map(({ icon: Icon, label, tab }) => (
             <button
               key={label}
@@ -50,16 +78,24 @@ function App() {
             </button>
           ))}
         </nav>
-        <div className="px-6 py-5 border-t border-white/10 text-xs text-slate-200">
+        <div className={`px-6 py-5 border-t border-white/10 text-xs text-slate-200 ${sidebarOpen ? '' : 'md:hidden'}`}>
           © {new Date().getFullYear()} Email Dashboard v1.0.0
         </div>
       </aside>
 
       <main className="flex-1 flex flex-col overflow-hidden">
-        <header className="bg-white border-b border-slate-200">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-10 py-8">
+        <header className="bg-white border-b border-slate-200 flex-shrink-0">
+          <div className="w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-10 py-8">
             <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-6">
-              <div>
+              <div className="flex items-center gap-4">
+                <button
+                  onClick={() => setSidebarOpen(!sidebarOpen)}
+                  className="text-slate-600 hover:text-slate-900 p-2 rounded-lg hover:bg-slate-100 transition-colors"
+                  aria-label="Toggle sidebar"
+                >
+                  <Menu size={24} />
+                </button>
+                <div>
                 <p className="text-sm uppercase tracking-wider text-slate-500 font-semibold mb-2">
                   Send template emails using SendGrid
                 </p>
@@ -67,6 +103,7 @@ function App() {
                 <p className="text-slate-500 mt-2">
                   Manage Flashfire&apos;s internal campaigns and keep a private record of each send.
                 </p>
+                </div>
               </div>
               <div className="flex flex-wrap gap-3">
                 <button
@@ -122,16 +159,18 @@ function App() {
           </div>
         </header>
 
-        <section className="flex-1 overflow-y-auto">
-          {activeTab === 'campaigns' && <ProtectedCampaignManager />}
-          {activeTab === 'emails' && (
-            <ProtectedEmailCampaign
-              prefill={emailPrefill}
-              onPrefillConsumed={() => setEmailPrefill(null)}
-            />
-          )}
-          {activeTab === 'analytics' && <AnalyticsDashboard onOpenEmailCampaign={handleOpenEmailCampaign} />}
-          {activeTab === 'data' && <UnifiedDataView onOpenEmailCampaign={handleOpenEmailCampaign} />}
+        <section className="flex-1 overflow-y-auto w-full">
+          <div className="w-full h-full">
+            {activeTab === 'campaigns' && <ProtectedCampaignManager />}
+            {activeTab === 'emails' && (
+              <ProtectedEmailCampaign
+                prefill={emailPrefill}
+                onPrefillConsumed={() => setEmailPrefill(null)}
+              />
+            )}
+            {activeTab === 'analytics' && <AnalyticsDashboard onOpenEmailCampaign={handleOpenEmailCampaign} />}
+            {activeTab === 'data' && <UnifiedDataView onOpenEmailCampaign={handleOpenEmailCampaign} />}
+          </div>
         </section>
       </main>
     </div>
